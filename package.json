@@ -19,7 +19,7 @@
     "url": "https://github.com/kind-0/nsecbunkerd"
   },
   "scripts": {
-    "build": "tsup src/index.ts; tsup src/daemon/index.ts -d dist/daemon; tsup src/client.ts -d dist/client",
+    "build": "tsup src/index.ts --clean; tsup src/daemon/index.ts --clean -d dist/daemon; tsup src/client.ts --clean -d dist/client",
     "build:client": "tsup src/client.ts -d dist/client",
     "prisma:generate": "npx prisma generate",
     "prisma:migrate": "npx prisma migrate deploy",
@@ -40,7 +40,7 @@
     "@inquirer/password": "1.1.2",
     "@inquirer/prompts": "1.2.3",
     "@nostr-dev-kit/ndk": "2.10.7",
-    "@prisma/client": "5.4.1",
+    "@prisma/client": "^5.10.0",
     "@scure/base": "1.1.1",
     "@types/yargs": "17.0.24",
     "axios": "1.6.2",
@@ -60,12 +60,12 @@
     "nostr-tools": "1.17.0",
     "websocket-polyfill": "0.0.3",
     "ws": "8.13.0",
-    "yargs": "17.7.2"
+    "yargs": "17.7.2",
+    "prisma": "^5.10.0"
   },
   "devDependencies": {
     "@types/debug": "4.1.8",
     "@types/node": "18.16.18",
-    "prisma": "5.4.1",
     "ts-node": "10.9.1",
     "tsup": "7.2.0",
     "typescript": "5.1.3"

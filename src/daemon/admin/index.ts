@@ -24,6 +24,7 @@ const debug = createDebug("nsecbunker:admin");
 
 export type IAdminOpts = {
     npubs: string[];
+    registrarNpub?: string;
     adminRelays: string[];
     key: string;
     notifyAdminsOnBoot?: boolean;
@@ -48,9 +49,12 @@ class AdminInterface {
     public unlockKey?: (keyName: string, passphrase: string) => Promise<boolean>;
     public loadNsec?: (keyName: string, nsec: string) => void;
 
+    public readonly opts: IAdminOpts;
+
     constructor(opts: IAdminOpts, configFile: string) {
+        this.opts = opts;
         this.configFile = configFile;
-        this.npubs = opts.npubs||[];
+        this.npubs = opts.npubs || [];
         this.ndk = new NDK({
             explicitRelayUrls: opts.adminRelays,
             signer: new NDKPrivateKeySigner(opts.key),
@@ -87,14 +91,13 @@ class AdminInterface {
     }
 
     private async notifyAdminsOfNewConnection(connectionString: string) {
-        const blastrNdk = new NDK({
-            explicitRelayUrls: ['wss://blastr.f7z.xyz', 'wss://nostr.mutinywallet.com'],
-            signer: this.ndk.signer
-        });
-        await blastrNdk.connect(2500);
+        // Use the already-configured adminRelays instead of hardcoded external relays
+        if (!this.npubs || this.npubs.length === 0) {
+            return;
+        }
 
-        for (const npub of this.npubs||[]) {
-            dmUser(blastrNdk, npub, `nsecBunker has started; use ${connectionString} to connect to it and unlock your key(s)`);
+        for (const npub of this.npubs) {
+            dmUser(this.ndk, npub, `nsecBunker has started; use ${connectionString} to connect to it and unlock your key(s)`);
         }
     }
 
@@ -106,7 +109,8 @@ class AdminInterface {
     }
 
     private connect() {
-        if (this.npubs.length <= 0) {
+        // Start admin interface if we have admin npubs OR a registrar npub
+        if (this.npubs.length <= 0 && !this.opts.registrarNpub) {
             console.log(`❌ Admin interface not starting because no admin npubs were provided`);
             return;
         }
@@ -157,12 +161,26 @@ class AdminInterface {
                     );
             }
         } catch (err: any) {
-            debug(`Error handling request ${req.method}: ${err?.message??err}`, req.params);
+            debug(`Error handling request ${req.method}: ${err?.message ?? err}`, req.params);
             return this.rpc.sendResponse(req.id, req.pubkey, "error", NDKKind.NostrConnectAdmin, err?.message);
         }
     }
 
     private async validateRequest(req: NDKRpcRequest): Promise<void> {
+        // Restricted Registrar Logic: can ONLY call create_account
+        const registrarNpub = this.opts?.registrarNpub;
+        if (registrarNpub) {
+            const registrarPubkey = (new NDKUser({ npub: registrarNpub })).pubkey;
+            if (req.pubkey === registrarPubkey) {
+                if (req.method === 'create_account') {
+                    console.log(`✅ Allowing create_account from Restricted Registrar: ${registrarNpub}`);
+                    return;
+                } else {
+                    console.warn(`⛔ Denying ${req.method} from Restricted Registrar: ${registrarNpub}`);
+                    throw new Error('Registrar is only allowed to create_account');
+                }
+            }
+        }
         // if this request is of type create_account, allow it
         // TODO: require some POW to prevent spam
         if (req.method === 'create_account' && allowNewKeys) {

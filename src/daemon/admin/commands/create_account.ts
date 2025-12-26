@@ -1,4 +1,4 @@
-import { Hexpubkey, NDKKind, NDKPrivateKeySigner, NDKRpcRequest, NDKUserProfile } from "@nostr-dev-kit/ndk";
+import { Hexpubkey, NDKKind, NDKPrivateKeySigner, NDKRpcRequest, NDKUserProfile, NDKUser } from "@nostr-dev-kit/ndk";
 import AdminInterface from "..";
 import { nip19 } from 'nostr-tools';
 import { setupSkeletonProfile } from "../../lib/profile";
@@ -115,6 +115,21 @@ export default async function createAccount(admin: AdminInterface, req: NDKRpcRe
     const payload: string[] = [ username, domain ];
     if (email) payload.push(email);
 
+    // Check if request is from Registrar and bypass authorization
+    const registrarNpub = (admin as any).opts?.registrarNpub;
+    let isRegistrar = false;
+    if (registrarNpub) {
+        const registrarPubkey = (new NDKUser({ npub: registrarNpub })).pubkey;
+        if (req.pubkey === registrarPubkey) {
+            isRegistrar = true;
+        }
+    }
+
+    if (isRegistrar) {
+        debug(`Bypassing authorization for Registrar`);
+        return createAccountReal(admin, req, username, domain, email);
+    }
+
     debug(`Requesting authorization for ${nip05}`);
     const authorizationWithPayload = await requestAuthorization(
         admin,
@@ -154,7 +169,27 @@ export async function createAccountReal(
 
         const domainConfig = currentConfig.domains[domain];
 
-        await validate(currentConfig, username, domain, email);
+        // await validate(currentConfig, username, domain, email);
+
+        try {
+            await validate(currentConfig, username, domain, email);
+
+        } catch (e: any) {
+            if (e.message === 'username already exists') {
+                debug('username already exists, implementing idempotency');
+                const nip05s = await getCurrentNip05File(currentConfig, domain);
+                const existingPubkey = nip05s.names[username];
+                if (existingPubkey) {
+                    debug(`Found existing pubkey ${existingPubkey} for ${username}`);
+                    // Ensure permissions are granted (idempotent)
+                    const keyName = `${username}@${domain}`;
+                    await grantPermissions(req, keyName);
+                    debug('permissions re-granted for existing user');
+                    return admin.rpc.sendResponse(req.id, req.pubkey, existingPubkey, NDKKind.NostrConnectAdmin);
+                }
+            }
+            throw e;
+        }
 
         const nip05 = `${username}@${domain}`;
         const key = NDKPrivateKeySigner.generate();
@@ -186,12 +221,12 @@ export async function createAccountReal(
                 debug(`error generating wallet for ${nip05}`, e);
             }).finally(() => {
                 debug(`saving profile for ${nip05}`, profile);
-                setupSkeletonProfile(key, profile, email);
+                setupSkeletonProfile(key, profile, email, currentConfig.nostr.relays);
             })
         } else {
             debug(`no wallet configuration for ${domain}`);
             // Create user profile
-            setupSkeletonProfile(key, profile, email);
+            setupSkeletonProfile(key, profile, email, currentConfig.nostr.relays);
         }
 
         const keyName = nip05;
@@ -211,7 +246,7 @@ export async function createAccountReal(
 
         return admin.rpc.sendResponse(req.id, req.pubkey, generatedUser.pubkey, NDKKind.NostrConnectAdmin);
     } catch (e: any) {
-        console.trace('error', e);
+        debug(`error creating account: ${e.message}`);
         return admin.rpc.sendResponse(req.id, req.pubkey, "error", NDKKind.NostrConnectAdmin,
             e.message);
     }

@@ -145,6 +145,13 @@ export async function start(opts: IOpts) {
         ...configData,
         keys,
     });
+
+    console.log(`Daemon started with PID ${daemonProcess.pid}`);
+
+    daemonProcess.on('exit', (code) => {
+        console.log(`Daemon exited with code ${code}`);
+        process.exit(code || 0);
+    });
 }
 
 interface KeyData {
