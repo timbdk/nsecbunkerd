@@ -32,11 +32,13 @@ if (!command) {
 }
 
 async function createNDK(): Promise<NDK> {
+    if (relays.length === 0) {
+        console.error('Error: No relays specified. Use --relays to specify relay URLs.');
+        process.exit(1);
+    }
+
     const ndk = new NDK({
-        explicitRelayUrls: [
-		'wss://relay.nsecbunker.com',
-		...relays
-	],
+        explicitRelayUrls: relays,
         enableOutboxModel: false
     });
     if (debug) {

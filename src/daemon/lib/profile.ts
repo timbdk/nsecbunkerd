@@ -4,22 +4,21 @@ import createDebug from "debug";
 
 const debug = createDebug("nsecbunker:profile");
 
-const explicitRelayUrls = [
-    'wss://purplepag.es',
-    'wss://relay.damus.io',
-    'wss://relay.nostr.band',
-    'wss://nos.lol',
-    "wss://nostr.mutinywallet.com"
-];
-
 /**
  * Setup a skeleton profile for a new key since
  * the experience of a completely empty profile
  * is pretty bad when logging in with Coracle.
  *
+ * @param key - The private key signer for the new user
+ * @param profile - Optional profile data to use
  * @param email - if provided, will fetch the gravatar
+ * @param explicitRelayUrls - Required: the relays to publish profile events to
  */
-export async function setupSkeletonProfile(key: NDKPrivateKeySigner, profile?: NDKUserProfile, email?: string) {
+export async function setupSkeletonProfile(key: NDKPrivateKeySigner, profile: NDKUserProfile | undefined, email: string | undefined, explicitRelayUrls: string[]) {
+    if (!explicitRelayUrls || explicitRelayUrls.length === 0) {
+        debug('No relay URLs provided, skipping skeleton profile setup');
+        return;
+    }
     const rand = Math.random().toString(36).substring(7);
     profile ??= {};
     profile.display_name ??= 'New User via nsecBunker';
@@ -72,14 +71,7 @@ export async function setupSkeletonProfile(key: NDKPrivateKeySigner, profile?: N
 
     const relays = new NDKEvent(ndk, {
         kind: 10002,
-        tags: [
-            ['r', 'wss://purplepag.es'],
-            ['r', 'wss://relay.f7z.io'],
-            ['r', 'wss://relay.damus.io'],
-            ['r', 'wss://relayable.org'],
-            ['r', 'wss://relay.nostr.band'],
-            ['r', 'wss://relay.primal.net'],
-        ],
+        tags: explicitRelayUrls.map(url => ['r', url]),
         pubkey: user.pubkey,
     } as NostrEvent);
     await relays.sign(key);

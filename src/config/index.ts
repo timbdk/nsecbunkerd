@@ -44,18 +44,13 @@ export interface IConfig {
 
 const defaultConfig: IConfig = {
     nostr: {
-        relays: [
-            'wss://relay.damus.io',
-            "wss://relay.nsecbunker.com"
-        ]
+        relays: []  // Must be configured via config file or RELAYS env var
     },
     admin: {
         npubs: [],
-        adminRelays: [
-            "wss://relay.nsecbunker.com"
-        ],
+        adminRelays: [],  // Must be configured via config file or RELAYS env var
         key: generatedKey.privateKey!,
-        notifyAdminsOnBoot: true,
+        notifyAdminsOnBoot: false,  // Disabled by default since no external relays
     },
     database: 'sqlite://nsecbunker.db',
     logs: './nsecbunker.log',

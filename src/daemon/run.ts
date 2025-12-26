@@ -1,4 +1,4 @@
-import NDK, { NDKPrivateKeySigner, Nip46PermitCallback, Nip46PermitCallbackParams } from '@nostr-dev-kit/ndk';
+import NDK, { NDKEvent, NDKPrivateKeySigner, Nip46PermitCallback, Nip46PermitCallbackParams } from '@nostr-dev-kit/ndk';
 import { nip19 } from 'nostr-tools';
 import { Backend } from './backend/index.js';
 import {
@@ -146,11 +146,16 @@ class Daemon {
     private adminInterface: AdminInterface;
     private ndk: NDK;
     public fastify: FastifyInstance;
+    private isReady: boolean = false;
 
     constructor(config: DaemonConfig) {
         this.config = config;
         this.activeKeys = config.keys;
-        this.adminInterface = new AdminInterface(config.admin, config.configFile);
+        const registrarNpub = process.env.REGISTRAR_NPUB;
+        this.adminInterface = new AdminInterface({
+            ...config.admin,
+            registrarNpub
+        }, config.configFile);
 
         this.adminInterface.getKeys = getKeys(config);
         this.adminInterface.getKeyUsers = getKeyUsers(config);
@@ -190,6 +195,73 @@ class Daemon {
         this.fastify.get('/requests/:id', authorizeRequestWebHandler);
         this.fastify.post('/requests/:id', processRequestWebHandler);
         this.fastify.post('/register/:id', processRegistrationWebHandler);
+        this.fastify.get('/health', (req, res) => {
+            if (this.isReady) {
+                res.status(200).send('OK');
+            } else {
+                res.status(503).send('NOT READY');
+            }
+        });
+
+        // Testing endpoints - only enabled in testing/development
+        // Fail-safe: must be explicitly set, not just "not production"
+        const env = process.env.NODE_ENV;
+        if (env === 'testing' || env === 'development') {
+            console.log('🧪 Testing endpoints enabled (NODE_ENV=' + env + ')');
+
+            // Get key metadata by keyName (nsec never leaves signer)
+            this.fastify.get('/testing/keys/:keyName', async (req, res) => {
+                const { keyName } = req.params as { keyName: string };
+                const key = await prisma.key.findUnique({ where: { keyName } });
+                if (!key) return res.status(404).send({ error: 'Key not found' });
+                // Return metadata only, not the private key
+                return res.send({
+                    keyName: key.keyName,
+                    pubkey: key.pubkey,
+                    createdAt: key.createdAt,
+                    updatedAt: key.updatedAt
+                });
+            });
+
+            // Sign a challenge to prove private key exists
+            // The nsec stays in the signer - we just return proof it works
+            this.fastify.post('/testing/sign-challenge', async (req, res) => {
+              const { keyName, challenge } = req.body as { keyName: string; challenge: string };
+              const nsec = this.activeKeys[keyName];
+              if (!nsec) return res.status(404).send({ error: 'Key not loaded' });
+
+            try {
+                const signer = new NDKPrivateKeySigner(nsec);
+                const user = await signer.user();
+                const event = new NDKEvent(this.ndk, {
+                    kind: 1,
+                    content: challenge,
+                    created_at: Math.floor(Date.now() / 1000),
+                    tags: []
+                } as any);
+                await event.sign(signer);
+
+                return res.send({
+                    pubkey: user.pubkey,
+                    sig: event.sig,
+                    verified: true
+                });
+                } catch (e: any) {
+                    return res.status(500).send({ error: e.message, verified: false });
+                }
+            });
+
+            // List received events for observability
+            this.fastify.get('/testing/events/received', async (req, res) => {
+                const { method } = req.query as { method?: string };
+                const requests = await prisma.request.findMany({
+                    where: method ? { method } : {},
+                    orderBy: { createdAt: 'desc' },
+                    take: 20
+                });
+                return res.send(requests);
+            });
+        }
     }
 
     async startKeys() {
@@ -216,7 +288,23 @@ class Daemon {
         await this.startWebAuth();
         await this.startKeys();
 
+        this.isReady = true;
         console.log('✅ nsecBunker ready to serve requests.');
+
+        // Keep process alive in testing (NDK subscriptions keep prod alive)
+        if (process.env.NODE_ENV === 'testing') {
+            setInterval(() => {
+                // No-op to keep event loop active
+            }, 1000 * 60 * 60);
+        }
+
+        process.on('uncaughtException', (e) => {
+            console.error('CRITICAL: Uncaught Exception:', e);
+        });
+
+        process.on('unhandledRejection', (e) => {
+            console.error('CRITICAL: Unhandled Rejection:', e);
+        });
     }
 
     /**
@@ -259,6 +347,8 @@ class Daemon {
     loadNsec(keyName: string, nsec: string) {
         this.activeKeys[keyName] = nsec;
 
-        this.startKey(keyName, nsec);
+        this.startKey(keyName, nsec).catch((e) => {
+           console.error(`ERROR: Failed to start key ${keyName}:`, e);
+        });
     }
 }
