@@ -2,13 +2,15 @@ import { Hexpubkey, NDKKind, NDKPrivateKeySigner, NDKRpcRequest, NDKUserProfile,
 import AdminInterface from "..";
 import { nip19 } from 'nostr-tools';
 import { setupSkeletonProfile } from "../../lib/profile";
-import { IConfig, getCurrentConfig, saveCurrentConfig } from "../../../config";
+import { IConfig, getCurrentConfig } from "../../../config";
 import { readFileSync, writeFileSync } from "fs";
 import { allowAllRequestsFromKey } from "../../lib/acl";
 import { requestAuthorization } from "../../authorize";
 import { generateWallet } from "./account/wallet";
 import prisma from "../../../db";
 import createDebug from "debug";
+import { encryptPrivateKey, storeKey, hexToNsec, markKeyBackedUp } from "../../../services/KeyService.js";
+import { backupKey } from "../../../services/BackupService.js";
 
 const debug = createDebug("nsecbunker:createAccount");
 
@@ -100,13 +102,18 @@ async function validateDomain(domain: string | undefined, admin: AdminInterface,
 }
 
 export default async function createAccount(admin: AdminInterface, req: NDKRpcRequest) {
-    let [ username, domain, email ] = req.params as [ string?, string?, string? ];
+    // params: [username, domain, email?, clientPubkey?, correlationId?]
+    let [ username, domain, email, clientPubkey, correlationId ] = req.params as [ string?, string?, string?, string?, string? ];
+
+    // Log with correlationId for tracing
+    debug(`[${correlationId?.slice(0, 8) || 'no-corr'}] create_account request from ${req.pubkey.slice(0, 16)}...`);
 
     try {
         domain = await validateDomain(domain, admin, req);
         username = await validateUsername(username, domain, admin, req);
     } catch (e: any) {
         const originalKind = req.event.kind!;
+        debug(`[${correlationId?.slice(0, 8) || 'no-corr'}] create_account validation failed: ${e.message}`);
         admin.rpc.sendResponse(req.id, req.pubkey, "error", originalKind, e.message);
         return;
     }
@@ -114,6 +121,7 @@ export default async function createAccount(admin: AdminInterface, req: NDKRpcRe
     const nip05 = `${username}@${domain}`;
     const payload: string[] = [ username, domain ];
     if (email) payload.push(email);
+    if (clientPubkey) payload.push(clientPubkey);
 
     // Check if request is from Registrar and bypass authorization
     const registrarNpub = (admin as any).opts?.registrarNpub;
@@ -126,8 +134,8 @@ export default async function createAccount(admin: AdminInterface, req: NDKRpcRe
     }
 
     if (isRegistrar) {
-        debug(`Bypassing authorization for Registrar`);
-        return createAccountReal(admin, req, username, domain, email);
+        debug(`[${correlationId?.slice(0, 8) || 'no-corr'}] Bypassing authorization for Registrar`);
+        return createAccountReal(admin, req, username, domain, email, clientPubkey);
     }
 
     debug(`Requesting authorization for ${nip05}`);
@@ -146,7 +154,8 @@ export default async function createAccount(admin: AdminInterface, req: NDKRpcRe
         username = payload[0];
         domain = payload[1];
         email = payload[2];
-        return createAccountReal(admin, req, username, domain, email);
+        clientPubkey = payload[3];
+        return createAccountReal(admin, req, username, domain, email, clientPubkey);
     }
 }
 
@@ -158,7 +167,8 @@ export async function createAccountReal(
     req: NDKRpcRequest,
     username: string,
     domain: string,
-    email?: string
+    email?: string,
+    clientPubkey?: string
 ) {
     try {
         const currentConfig = await getCurrentConfig(admin.configFile);
@@ -183,7 +193,7 @@ export async function createAccountReal(
                     debug(`Found existing pubkey ${existingPubkey} for ${username}`);
                     // Ensure permissions are granted (idempotent)
                     const keyName = `${username}@${domain}`;
-                    await grantPermissions(req, keyName);
+                    await grantPermissions(req, keyName, clientPubkey);
                     debug('permissions re-granted for existing user');
                     return admin.rpc.sendResponse(req.id, req.pubkey, existingPubkey, NDKKind.NostrConnectAdmin);
                 }
@@ -230,19 +240,30 @@ export async function createAccountReal(
         }
 
         const keyName = nip05;
-        const nsec = nip19.nsecEncode(key.privateKey!);
-        currentConfig.keys[keyName] = { key: key.privateKey };
+        const privateKeyHex = key.privateKey!;
+        const nsec = nip19.nsecEncode(privateKeyHex);
 
-        saveCurrentConfig(admin.configFile, currentConfig);
+        // Backup-first: encrypt and backup before local storage
+        debug(`Encrypting key for ${keyName}`);
+        const encryptedData = encryptPrivateKey(privateKeyHex, keyName);
+
+        debug(`Backing up key for ${keyName}`);
+        const backupResult = await backupKey(keyName, encryptedData, generatedUser.pubkey);
+        if (!backupResult.success) {
+            throw new Error(`Backup failed for ${keyName}: ${backupResult.error}`);
+        }
+
+        // Only store locally after successful backup
+        debug(`Storing key locally for ${keyName}`);
+        await storeKey(keyName, privateKeyHex, generatedUser.pubkey);
+        await markKeyBackedUp(keyName);
 
         await admin.loadNsec!(keyName, nsec);
 
-        await prisma.key.create({ data: { keyName, pubkey: generatedUser.pubkey } });
-
-        // Immediately grant access to the creator key
+        // Immediately grant access to the creator key and client
         // This means that the client creating this account can immediately
         // access it without having to go through an approval flow
-        await grantPermissions(req, keyName);
+        await grantPermissions(req, keyName, clientPubkey);
 
         return admin.rpc.sendResponse(req.id, req.pubkey, generatedUser.pubkey, NDKKind.NostrConnectAdmin);
     } catch (e: any) {
@@ -252,9 +273,19 @@ export async function createAccountReal(
     }
 }
 
-async function grantPermissions(req: NDKRpcRequest, keyName: string) {
-    await allowAllRequestsFromKey(req.pubkey, keyName, "connect");
-    await allowAllRequestsFromKey(req.pubkey, keyName, "sign_event", undefined, undefined, { kind: 'all' });
-    await allowAllRequestsFromKey(req.pubkey, keyName, "encrypt");
-    await allowAllRequestsFromKey(req.pubkey, keyName, "decrypt");
+async function grantPermissions(req: NDKRpcRequest, keyName: string, clientPubkey?: string) {
+    // Grant permissions to the registrar that initiated the request
+    await allowAllRequestsFromKey(req.pubkey, keyName, "connect", undefined, "registrar");
+    await allowAllRequestsFromKey(req.pubkey, keyName, "sign_event", undefined, "registrar", { kind: 'all' });
+    await allowAllRequestsFromKey(req.pubkey, keyName, "encrypt", undefined, "registrar");
+    await allowAllRequestsFromKey(req.pubkey, keyName, "decrypt", undefined, "registrar");
+    
+    // Grant permissions to the client's ephemeral keypair
+    // This allows the web browser that initiated registration to immediately connect
+    if (clientPubkey) {
+        await allowAllRequestsFromKey(clientPubkey, keyName, "connect", undefined, "client");
+        await allowAllRequestsFromKey(clientPubkey, keyName, "sign_event", undefined, "client", { kind: 'all' });
+        await allowAllRequestsFromKey(clientPubkey, keyName, "encrypt", undefined, "client");
+        await allowAllRequestsFromKey(clientPubkey, keyName, "decrypt", undefined, "client");
+    }
 }

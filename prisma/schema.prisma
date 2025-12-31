@@ -37,12 +37,16 @@ model KeyUser {
 }
 
 model Key {
-  id        Int      @id @default(autoincrement())
-  keyName   String    @unique
-  createdAt DateTime @default(now())
-  updatedAt DateTime @default(now()) @updatedAt
-  deletedAt DateTime?
-  pubkey    String
+  id           Int       @id @default(autoincrement())
+  keyName      String    @unique
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @default(now()) @updatedAt
+  deletedAt    DateTime?
+  pubkey       String
+  encryptedKey String?   // AES-256-GCM ciphertext (hex)
+  iv           String?   // Initialization vector (hex)
+  authTag      String?   // GCM authentication tag (hex)
+  backedUpAt   DateTime? // When backup confirmed
 }
 
 model User {

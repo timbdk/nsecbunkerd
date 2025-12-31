@@ -1,4 +1,5 @@
 import NDK, { NDKEvent, NDKPrivateKeySigner, Nip46PermitCallback, Nip46PermitCallbackParams } from '@nostr-dev-kit/ndk';
+import { log, auditSigningRequest, logStartup, logError } from '../lib/logger.js';
 import { nip19 } from 'nostr-tools';
 import { Backend } from './backend/index.js';
 import {
@@ -16,8 +17,8 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import FastifyFormBody from "@fastify/formbody";
 import FastifyView from '@fastify/view';
 import Handlebars from "handlebars";
-import {authorizeRequestWebHandler, processRequestWebHandler} from "./web/authorize.js";
-import {processRegistrationWebHandler} from "./web/authorize.js";
+import { authorizeRequestWebHandler, processRequestWebHandler } from "./web/authorize.js";
+import { processRegistrationWebHandler } from "./web/authorize.js";
 
 export type Key = {
     name: string;
@@ -101,7 +102,7 @@ function getKeyUsers(config: IConfig) {
 function signingAuthorizationCallback(keyName: string, adminInterface: AdminInterface): Nip46PermitCallback {
     return async (p: Nip46PermitCallbackParams): Promise<boolean> => {
         const { id, method, pubkey: remotePubkey, params: payload } = p;
-        console.log(`🔑 ${keyName} is being requested to ${method} by ${nip19.npubEncode(remotePubkey)}, request ${id}`);
+        log.signing(`Request ${id}: ${method} by ${remotePubkey.slice(0, 16)}... for ${keyName}`);
 
         if (!adminInterface.requestPermission) {
             throw new Error('adminInterface.requestPermission is not defined');
@@ -111,7 +112,14 @@ function signingAuthorizationCallback(keyName: string, adminInterface: AdminInte
             const keyAllowed = await checkIfPubkeyAllowed(keyName, remotePubkey, method as IMethod, payload);
 
             if (keyAllowed === true || keyAllowed === false) {
-                console.log(`🔎 ${nip19.npubEncode(remotePubkey)} is ${keyAllowed ? 'allowed' : 'denied'} to ${method} with key ${keyName}`);
+                // Audit log for signing decisions
+                auditSigningRequest({
+                    timestamp: new Date().toISOString(),
+                    keyName,
+                    clientPubkey: remotePubkey,
+                    method,
+                    allowed: keyAllowed,
+                });
                 return keyAllowed;
             }
 
@@ -124,11 +132,11 @@ function signingAuthorizationCallback(keyName: string, adminInterface: AdminInte
                     method,
                     payload
                 )
-                    .then(() => resolve(true))
-                    .catch(() => resolve(false));
+                .then(() => resolve(true))
+                .catch(() => resolve(false));
             });
-        } catch(e) {
-            console.log('callbackForKey error:', e);
+        } catch (e: any) {
+            logError('signing', `Authorization callback error for ${keyName}`, e);
         }
 
         return false;
@@ -155,7 +163,7 @@ class Daemon {
         this.adminInterface = new AdminInterface({
             ...config.admin,
             registrarNpub
-        }, config.configFile);
+        }, config.configFile, config);
 
         this.adminInterface.getKeys = getKeys(config);
         this.adminInterface.getKeyUsers = getKeyUsers(config);
@@ -168,11 +176,19 @@ class Daemon {
         this.ndk = new NDK({
             explicitRelayUrls: config.nostr.relays,
         });
-        this.ndk.pool.on('relay:connect', (r) => console.log(`✅ Connected to ${r.url}`) );
-        this.ndk.pool.on('relay:notice', (n, r) => { console.log(`👀 Notice from ${r.url}`, n); });
+
+        // Assign a signer to the NDK instance so it can handle NIP-42 AUTH challenges
+        // Using the master key for the daemon's own connection authentication
+        log.daemon(`SIGNER_MASTER_KEY: ${process.env.SIGNER_MASTER_KEY ? 'present' : 'missing'}`);
+        if (process.env.SIGNER_MASTER_KEY) {
+            log.daemon('Daemon NDK Signer configured with Master Key');
+            this.ndk.signer = new NDKPrivateKeySigner(process.env.SIGNER_MASTER_KEY);
+        }
+        this.ndk.pool.on('relay:connect', (r) => log.daemon(`Connected to ${r.url}`));
+        this.ndk.pool.on('relay:notice', (n, r) => log.daemon(`Notice from ${r.url}: ${n}`));
 
         this.ndk.pool.on('relay:disconnect', (r) => {
-            console.log(`🚫 Disconnected from ${r.url}`);
+            log.daemon(`Disconnected from ${r.url}`);
         });
     }
 
@@ -186,7 +202,7 @@ class Daemon {
                 handlebars: Handlebars,
             },
             defaultContext: {
-                urlPrefix 
+                urlPrefix
             }
         });
 
@@ -223,29 +239,143 @@ class Daemon {
                 });
             });
 
+            // Short-circuit registration for testing
+            // Test-runner provides the nsec and clientPubkey, signer stores and authorizes them
+            this.fastify.post('/testing/register', async (req, res) => {
+                const { keyName, nsec, pubkey, clientPubkey } = req.body as {
+                    keyName: string;
+                    nsec: string;
+                    pubkey: string;
+                    clientPubkey?: string;
+                };
+                if (!keyName || !nsec || !pubkey) {
+                    return res.status(400).send({ error: 'keyName, nsec and pubkey are required' });
+                }
+                try {
+                    // Import required functions
+                    const { storeKey } = await import('../services/KeyService.js');
+                    const { allowAllRequestsFromKey } = await import('./lib/acl/index.js');
+
+                    // Decode nsec to hex
+                    const privateKeyHex = nip19.decode(nsec).data as string;
+
+                    // Store encrypted in DB
+                    await storeKey(keyName, privateKeyHex, pubkey);
+
+                    // Grant permissions to client keypair if provided
+                    if (clientPubkey) {
+                        await allowAllRequestsFromKey(clientPubkey, keyName, "connect", undefined, "test-client");
+                        await allowAllRequestsFromKey(clientPubkey, keyName, "sign_event", undefined, "test-client", { kind: 'all' });
+                        await allowAllRequestsFromKey(clientPubkey, keyName, "encrypt", undefined, "test-client");
+                        await allowAllRequestsFromKey(clientPubkey, keyName, "decrypt", undefined, "test-client");
+                        console.log(`🧪 Testing: authorized client ${clientPubkey.slice(0, 16)}... for key ${keyName}`);
+                    }
+
+                    // Load into active keys for signing
+                    this.activeKeys[keyName] = nsec;
+
+                    console.log(`🧪 Testing: registered key ${keyName}`);
+
+                    return res.status(201).send({
+                        success: true,
+                        keyName,
+                        pubkey,
+                        clientAuthorized: !!clientPubkey
+                    });
+                } catch (e: any) {
+                    if (e.code === 'P2002') {
+                        return res.status(409).send({ error: 'Key already exists' });
+                    }
+                    console.error(`Testing register error:`, e);
+                    return res.status(500).send({ error: e.message });
+                }
+            });
+
+            // Authorize a client pubkey for an existing key (for post-registration authorization)
+            this.fastify.post('/testing/authorize-client', async (req, res) => {
+                const { keyName, clientPubkey } = req.body as {
+                    keyName: string;
+                    clientPubkey: string;
+                };
+                if (!keyName || !clientPubkey) {
+                    return res.status(400).send({ error: 'keyName and clientPubkey are required' });
+                }
+                try {
+                    const { allowAllRequestsFromKey } = await import('./lib/acl/index.js');
+
+                    // Verify the key exists
+                    const key = await prisma.key.findUnique({ where: { keyName } });
+                    if (!key) {
+                        return res.status(404).send({ error: `Key not found: ${keyName}` });
+                    }
+
+                    // Grant permissions to client pubkey
+                    await allowAllRequestsFromKey(clientPubkey, keyName, "connect", undefined, "test-client");
+                    await allowAllRequestsFromKey(clientPubkey, keyName, "sign_event", undefined, "test-client", { kind: 'all' });
+                    await allowAllRequestsFromKey(clientPubkey, keyName, "encrypt", undefined, "test-client");
+                    await allowAllRequestsFromKey(clientPubkey, keyName, "decrypt", undefined, "test-client");
+
+                    console.log(`🧪 Testing: authorized client ${clientPubkey.slice(0, 16)}... for key ${keyName}`);
+
+                    return res.status(200).send({
+                        success: true,
+                        keyName,
+                        clientPubkey: clientPubkey.slice(0, 16) + '...'
+                    });
+                } catch (e: any) {
+                    console.error(`Testing authorize-client error:`, e);
+                    return res.status(500).send({ error: e.message });
+                }
+            });
+
+            // Legacy: Create a key entry for testing (pubkey only)
+            this.fastify.post('/testing/keys', async (req, res) => {
+                const { keyName, pubkey } = req.body as { keyName: string; pubkey: string };
+                if (!keyName || !pubkey) {
+                    return res.status(400).send({ error: 'keyName and pubkey are required' });
+                }
+                try {
+                    const key = await prisma.key.create({
+                        data: { keyName, pubkey }
+                    });
+                    return res.status(201).send({
+                        id: key.id,
+                        keyName: key.keyName,
+                        pubkey: key.pubkey,
+                        createdAt: key.createdAt,
+                        updatedAt: key.updatedAt
+                    });
+                } catch (e: any) {
+                    if (e.code === 'P2002') {
+                        return res.status(409).send({ error: 'Key already exists' });
+                    }
+                    return res.status(500).send({ error: e.message });
+                }
+            });
+
             // Sign a challenge to prove private key exists
             // The nsec stays in the signer - we just return proof it works
             this.fastify.post('/testing/sign-challenge', async (req, res) => {
-              const { keyName, challenge } = req.body as { keyName: string; challenge: string };
-              const nsec = this.activeKeys[keyName];
-              if (!nsec) return res.status(404).send({ error: 'Key not loaded' });
+                const { keyName, challenge } = req.body as { keyName: string; challenge: string };
+                const nsec = this.activeKeys[keyName];
+                if (!nsec) return res.status(404).send({ error: 'Key not loaded' });
 
-            try {
-                const signer = new NDKPrivateKeySigner(nsec);
-                const user = await signer.user();
-                const event = new NDKEvent(this.ndk, {
-                    kind: 1,
-                    content: challenge,
-                    created_at: Math.floor(Date.now() / 1000),
-                    tags: []
-                } as any);
-                await event.sign(signer);
+                try {
+                    const signer = new NDKPrivateKeySigner(nsec);
+                    const user = await signer.user();
+                    const event = new NDKEvent(this.ndk, {
+                        kind: 1,
+                        content: challenge,
+                        created_at: Math.floor(Date.now() / 1000),
+                        tags: []
+                    } as any);
+                    await event.sign(signer);
 
-                return res.send({
-                    pubkey: user.pubkey,
-                    sig: event.sig,
-                    verified: true
-                });
+                    return res.send({
+                        pubkey: user.pubkey,
+                        sig: event.sig,
+                        verified: true
+                    });
                 } catch (e: any) {
                     return res.status(500).send({ error: e.message, verified: false });
                 }
@@ -265,31 +395,80 @@ class Daemon {
     }
 
     async startKeys() {
-        console.log('🔑 Starting keys', Object.keys(this.config.keys));
-        for (const [name, nsec] of Object.entries(this.config.keys)) {
-            console.log(`🔑 Starting ${name}...`);
-            await this.startKey(name, nsec);
-        }
+        // Load all encrypted keys from SQLite database
+        const { retrieveKey } = await import('../services/KeyService.js');
 
-        // Load unencrypted keys
-        const config = await this.adminInterface.config();
-        for (const [keyName, settings ] of Object.entries(config.keys))  {
-            if (!settings.key) {
-                continue;
+        const keys = await prisma.key.findMany({
+            where: {
+                encryptedKey: { not: null },
+                deletedAt: null
+            },
+            select: { keyName: true }
+        });
+
+        log.keys(`Starting ${keys.length} keys from database`);
+
+        for (const key of keys) {
+            try {
+                const privateKeyHex = await retrieveKey(key.keyName);
+                if (privateKeyHex) {
+                    log.keys(`Starting key: ${key.keyName}`);
+                    await this.startKey(key.keyName, privateKeyHex);
+                } else {
+                    logError('keys', `Could not decrypt key: ${key.keyName}`);
+                }
+            } catch (e: any) {
+                logError('keys', `Failed to start key ${key.keyName}`, e);
             }
-
-            const nsec = nip19.nsecEncode(settings.key);
-            this.loadNsec(keyName, nsec);
         }
     }
 
     async start() {
+        // Validate SIGNER_MASTER_KEY is set
+        const masterKey = process.env.SIGNER_MASTER_KEY;
+        if (!masterKey) {
+            logError('daemon', 'CRITICAL: SIGNER_MASTER_KEY environment variable not set');
+            console.error('This key must be provided and should never touch disk.');
+            process.exit(1);
+        }
+        if (masterKey.length !== 64) {
+            logError('daemon', 'CRITICAL: SIGNER_MASTER_KEY must be a 64-character hex string (256 bits)');
+            process.exit(1);
+        }
+        logStartup('SIGNER_MASTER_KEY validated');
+
+        // Validate stored encrypted keys (if any)
+        try {
+            const { validateAllKeys } = await import('../services/KeyService.js');
+            const result = await validateAllKeys();
+
+            if (result.failed.length > 0) {
+                if (result.failed.length > 5) {
+                    logError('keys', `Structural key corruption detected (${result.failed.length} failures)`);
+                    console.error('Run: npx nsecbunker validate-keys --verbose');
+                    console.error('Or restore keys from backup.');
+                    process.exit(1);
+                } else {
+                    for (const keyName of result.failed) {
+                        logError('keys', `Key validation failed: ${keyName}`);
+                    }
+                    console.error('Run: npx nsecbunker validate-keys --restore');
+                    process.exit(1);
+                }
+            } else if (result.total > 0) {
+                logStartup(`Validated ${result.valid}/${result.total} stored keys`);
+            }
+        } catch (e: any) {
+            // May fail if no keys yet, that's OK
+            log.keys(`Key validation skipped: ${e.message}`);
+        }
+
         await this.ndk.connect(5000);
         await this.startWebAuth();
         await this.startKeys();
 
         this.isReady = true;
-        console.log('✅ nsecBunker ready to serve requests.');
+        logStartup('nsecBunker ready to serve requests');
 
         // Keep process alive in testing (NDK subscriptions keep prod alive)
         if (process.env.NODE_ENV === 'testing') {
@@ -320,14 +499,14 @@ class Daemon {
             try {
                 const key = new NDKPrivateKeySigner(nsec);
                 hexpk = key.privateKey!;
-            } catch(e) {
+            } catch (e) {
                 console.error(`Error loading key ${name}:`, e);
                 return
             }
         } else {
             hexpk = nsec;
         }
-        
+
         const backend = new Backend(this.ndk, this.fastify, hexpk, cb, this.config.baseUrl);
         await backend.start();
     }
@@ -348,7 +527,7 @@ class Daemon {
         this.activeKeys[keyName] = nsec;
 
         this.startKey(keyName, nsec).catch((e) => {
-           console.error(`ERROR: Failed to start key ${keyName}:`, e);
+            console.error(`ERROR: Failed to start key ${keyName}:`, e);
         });
     }
 }

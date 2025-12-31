@@ -111,6 +111,16 @@ async function nip89announcement(configData: IConfig) {
 export async function start(opts: IOpts) {
     const configData = await getCurrentConfig(opts.config);
 
+    // RELAYS env var overrides config file relays (for testing with per-worker relays)
+    if (process.env.RELAYS) {
+        const envRelays = process.env.RELAYS.split(',').map(r => r.trim()).filter(r => r);
+        if (envRelays.length > 0) {
+            configData.nostr.relays = envRelays;
+            configData.admin.adminRelays = envRelays;
+            console.log(`✅ Using RELAYS from env: ${envRelays.join(', ')}`);
+        }
+    }
+
     if (opts.adminNpubs && opts.adminNpubs.length > 0) {
         configData.admin.npubs = opts.adminNpubs;
         console.log(`✅ adminNpubs: ${opts.adminNpubs}`)

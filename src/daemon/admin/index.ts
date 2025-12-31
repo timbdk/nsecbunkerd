@@ -6,13 +6,10 @@ import { Key, KeyUser } from '../run';
 import { allowAllRequestsFromKey } from '../lib/acl/index.js';
 import prisma from '../../db';
 import createAccount from './commands/create_account';
+import authorizeClient from './commands/authorize_client';
 import ping from './commands/ping.js';
 import createNewKey from './commands/create_new_key';
-import createNewPolicy from './commands/create_new_policy';
-import createNewToken from './commands/create_new_token';
-import unlockKey from './commands/unlock_key';
-import renameKeyUser from './commands/rename_key_user.js';
-import revokeUser from './commands/revoke_user';
+import revokeClient from './commands/revoke_client';
 import fs from 'fs';
 import { validateRequestFromAdmin } from './validations/request-from-admin';
 import { dmUser } from '../../utils/dm-user';
@@ -51,9 +48,13 @@ class AdminInterface {
 
     public readonly opts: IAdminOpts;
 
-    constructor(opts: IAdminOpts, configFile: string) {
+    private configData?: IConfig;
+
+    constructor(opts: IAdminOpts, configFile: string, configData?: IConfig) {
+        console.log('DEBUG: AdminInterface Constructor Called - CODE IS UPDATING');
         this.opts = opts;
         this.configFile = configFile;
+        this.configData = configData;
         this.npubs = opts.npubs || [];
         this.ndk = new NDK({
             explicitRelayUrls: opts.adminRelays,
@@ -70,7 +71,9 @@ class AdminInterface {
 
             // write connection string to connection.txt
             const configFolder = path.dirname(configFile)
-            fs.writeFileSync(path.join(configFolder, 'connection.txt'), connectionString);
+            try {
+                fs.writeFileSync(path.join(configFolder, 'connection.txt'), connectionString);
+            } catch(e) { /* ignore read-only */ }
 
             this.signerUser = user;
 
@@ -87,6 +90,7 @@ class AdminInterface {
     }
 
     public async config(): Promise<IConfig> {
+        if (this.configData) return this.configData;
         return getCurrentConfig(this.configFile);
     }
 
@@ -138,18 +142,17 @@ class AdminInterface {
             await this.validateRequest(req);
 
             switch (req.method) {
+                // Core commands (used in production)
+                case 'create_account': await createAccount(this, req); break;
+                case 'authorize_client': await authorizeClient(this, req); break;
+                case 'revoke_client': await revokeClient(this, req); break;
+                case 'ping': await ping(this, req); break;
+
+                // Query commands (used for admin/testing)
                 case 'get_keys': await this.reqGetKeys(req); break;
                 case 'get_key_users': await this.reqGetKeyUsers(req); break;
-                case 'rename_key_user': await renameKeyUser(this, req); break;
-                case 'get_key_tokens': await this.reqGetKeyTokens(req); break;
-                case 'revoke_user': await revokeUser(this, req); break;
                 case 'create_new_key': await createNewKey(this, req); break;
-                case 'create_account': await createAccount(this, req); break;
-                case 'ping': await ping(this, req); break;
-                case 'unlock_key': await unlockKey(this, req); break;
-                case 'create_new_policy': await createNewPolicy(this, req); break;
-                case 'get_policies': await this.reqListPolicies(req); break;
-                case 'create_new_token': await createNewToken(this, req); break;
+
                 default:
                     const originalKind = req.event.kind!;
                     console.log(`Unknown method ${req.method}`);
@@ -167,17 +170,18 @@ class AdminInterface {
     }
 
     private async validateRequest(req: NDKRpcRequest): Promise<void> {
-        // Restricted Registrar Logic: can ONLY call create_account
+        // Restricted Registrar Logic: can ONLY call create_account, authorize_user, revoke_user
         const registrarNpub = this.opts?.registrarNpub;
         if (registrarNpub) {
             const registrarPubkey = (new NDKUser({ npub: registrarNpub })).pubkey;
             if (req.pubkey === registrarPubkey) {
-                if (req.method === 'create_account') {
-                    console.log(`✅ Allowing create_account from Restricted Registrar: ${registrarNpub}`);
+                const allowedMethods = ['create_account', 'authorize_user', 'authorize_client', 'revoke_user', 'revoke_client'];
+                if (allowedMethods.includes(req.method)) {
+                    console.log(`✅ Allowing ${req.method} from Restricted Registrar: ${registrarNpub}`);
                     return;
                 } else {
                     console.warn(`⛔ Denying ${req.method} from Restricted Registrar: ${registrarNpub}`);
-                    throw new Error('Registrar is only allowed to create_account');
+                    throw new Error('Registrar is only allowed to call: ' + allowedMethods.join(', '));
                 }
             }
         }
@@ -224,7 +228,7 @@ class AdminInterface {
                 id: t.id,
                 key_name: t.keyName,
                 client_name: t.clientName,
-                token: [ npub, t.token ].join('#'),
+                token: [npub, t.token].join('#'),
                 policy_id: t.policyId,
                 policy_name: t.policy?.name,
                 created_at: t.createdAt,
@@ -316,7 +320,7 @@ class AdminInterface {
             },
         });
 
-        console.trace({method, param});
+        console.trace({ method, param });
 
         if (method === 'sign_event') {
             const e = param.rawEvent();
@@ -344,7 +348,7 @@ class AdminInterface {
             }, 10000);
 
             for (const npub of this.npubs) {
-                const remoteUser = new NDKUser({npub});
+                const remoteUser = new NDKUser({ npub });
                 console.log(`sending request to ${npub}`, remoteUser.pubkey);
                 const params = JSON.stringify({
                     keyName,
@@ -415,7 +419,7 @@ class AdminInterface {
 
 async function pingOrDie(ndk: NDK) {
     let deathTimer: NodeJS.Timeout | null = null;
-    
+
     function resetDeath() {
         if (deathTimer) clearTimeout(deathTimer);
         deathTimer = setTimeout(() => {
@@ -423,7 +427,7 @@ async function pingOrDie(ndk: NDK) {
             process.exit(1);
         }, 50000);
     }
-    
+
     const self = await ndk.signer!.user();
     const sub = ndk.subscribe({
         authors: [self.pubkey],
@@ -441,7 +445,7 @@ async function pingOrDie(ndk: NDK) {
     setInterval(() => {
         const event = new NDKEvent(ndk, {
             kind: NDKKind.NostrConnect,
-            tags: [ ["p", self.pubkey] ],
+            tags: [["p", self.pubkey]],
             content: "ping"
         } as NostrEvent);
         event.publish().then(() => {

@@ -7,8 +7,8 @@ export async function checkIfPubkeyAllowed(
     method: IMethod,
     payload?: string | NostrEvent
 ): Promise<boolean | undefined> {
-    // find KeyUser
-    const keyUser = await prisma.keyUser.findUnique({
+    // find KeyUser by specific pubkey
+    let keyUser = await prisma.keyUser.findUnique({
         where: { unique_key_user: { keyName, userPubkey: remotePubkey } },
     });
 
