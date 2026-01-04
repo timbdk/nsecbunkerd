@@ -8,4 +8,4 @@ connection.txt
 config
 .env
 .turbo
-prisma
+#prisma
