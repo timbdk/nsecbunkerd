@@ -3,7 +3,6 @@ import AdminInterface from "..";
 import { nip19 } from 'nostr-tools';
 import { setupSkeletonProfile } from "../../lib/profile";
 import { IConfig, getCurrentConfig } from "../../../config";
-import { readFileSync, writeFileSync } from "fs";
 import { allowAllRequestsFromKey } from "../../lib/acl";
 import { requestAuthorization } from "../../authorize";
 import { generateWallet } from "./account/wallet";
@@ -24,42 +23,15 @@ export async function validate(currentConfig, username: string, domain: string, 
         throw new Error('domain not found');
     }
 
-    // load the current nip05 for the domain
-    const nip05s = await getCurrentNip05File(currentConfig, domain);
+    // Check if username already exists in database
+    const keyName = `${username}@${domain}`;
+    const existingKey = await prisma.key.findFirst({
+        where: { keyName, deletedAt: null }
+    });
 
-    if (nip05s.names[username]) {
+    if (existingKey) {
         throw new Error('username already exists');
     }
-}
-
-const emptyNip05File = {
-    names: {},
-    relays: {},
-}
-
-async function getCurrentNip05File(currentConfig: any, domain: string) {
-    try {
-        const nip05File = currentConfig.domains[domain].nip05;
-        const file = readFileSync(nip05File, 'utf8');
-        return JSON.parse(file);
-    } catch (e: any) {
-        return emptyNip05File;
-    }
-}
-
-/**
- * Adds an entry to the nip05 file for the domain
- */
-async function addNip05(currentConfig: IConfig, username: string, domain: string, pubkey: Hexpubkey) {
-    const currentNip05s = await getCurrentNip05File(currentConfig, domain);
-    currentNip05s.names[username] = pubkey;
-    currentNip05s.relays ??= {};
-    currentNip05s.nip46 ??= {};
-    currentNip05s.nip46[pubkey] = currentConfig.nostr.relays;
-
-    // save file
-    const nip05File = currentConfig.domains![domain].nip05;
-    writeFileSync(nip05File, JSON.stringify(currentNip05s, null, 2));
 }
 
 /**
@@ -200,15 +172,17 @@ export async function createAccountReal(
         } catch (e: any) {
             if (e.message === 'username already exists') {
                 debug('username already exists, implementing idempotency');
-                const nip05s = await getCurrentNip05File(currentConfig, domain);
-                const existingPubkey = nip05s.names[username];
-                if (existingPubkey) {
-                    debug(`Found existing pubkey ${existingPubkey} for ${username}`);
+                const keyName = `${username}@${domain}`;
+                const existingKey = await prisma.key.findFirst({
+                    where: { keyName, deletedAt: null },
+                    select: { pubkey: true }
+                });
+                if (existingKey) {
+                    debug(`Found existing pubkey ${existingKey.pubkey} for ${username}`);
                     // Ensure permissions are granted (idempotent)
-                    const keyName = `${username}@${domain}`;
                     await grantPermissions(req, keyName, clientPubkey);
                     debug('permissions re-granted for existing user');
-                    return admin.rpc.sendResponse(req.id, req.pubkey, existingPubkey, NDKKind.NostrConnectAdmin);
+                    return admin.rpc.sendResponse(req.id, req.pubkey, existingKey.pubkey, NDKKind.NostrConnectAdmin);
                 }
             }
             throw e;
@@ -227,10 +201,8 @@ export async function createAccountReal(
 
         debug(`Created user ${generatedUser.npub} for ${nip05}`);
 
-        // Add NIP-05
-        await addNip05(currentConfig, username, domain, generatedUser.pubkey);
-
-        debug(`Added NIP-05 for ${nip05}`);
+        // Note: NIP-05 data is stored in the Key table (keyName = username@domain)
+        // No separate file write needed - keyName serves as the NIP-05 identifier
 
         // Create wallet
         if (domainConfig.wallet) {
