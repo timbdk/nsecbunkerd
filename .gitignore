@@ -9,3 +9,6 @@ config
 .env
 .turbo
 #prisma
+
+# OS-specific
+.DS_Store
