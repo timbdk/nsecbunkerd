@@ -169,8 +169,21 @@ export async function createAccountReal(
     domain: string,
     email?: string,
     clientPubkey?: string
-) {
+): Promise<void> {
+    const { auditService } = await import('../../../services/AuditService.js');
+    const scope = auditService.createScope(req.id, 'create_account');
+    
+    scope.logReceived({
+        clientPubkey,
+        requestEventId: req.event.id,
+        userIdentifier: `${username}@${domain}`,
+        details: { username, domain, email }
+    });
+
     try {
+        debug(`[${req.id}] create_account request from ${clientPubkey?.slice(0, 16) || 'unknown'}...`);
+        debug(`[${req.id}] Creating account for ${username}@${domain}`);
+
         const currentConfig = await getCurrentConfig(admin.configFile);
 
         if (!currentConfig.domains) {
@@ -265,9 +278,17 @@ export async function createAccountReal(
         // access it without having to go through an approval flow
         await grantPermissions(req, keyName, clientPubkey);
 
+        scope.logResponse({
+            userPubkey: generatedUser.pubkey,
+            userIdentifier: keyName,
+            responseEventId: undefined, // Will be set by rpc layer
+            clientPubkey: clientPubkey || req.pubkey
+        });
+
         return admin.rpc.sendResponse(req.id, req.pubkey, generatedUser.pubkey, NDKKind.NostrConnectAdmin);
     } catch (e: any) {
         debug(`error creating account: ${e.message}`);
+        scope.logError(e, { username, domain });
         return admin.rpc.sendResponse(req.id, req.pubkey, "error", NDKKind.NostrConnectAdmin,
             e.message);
     }

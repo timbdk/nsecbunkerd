@@ -391,6 +391,32 @@ class Daemon {
                 });
                 return res.send(requests);
             });
+
+            // Audit endpoints for comprehensive NIP-46 operation tracking
+            this.fastify.get('/testing/audit', async (req, res) => {
+                const { correlationId, method, status, type } = req.query as {
+                    correlationId?: string;
+                    method?: string;
+                    status?: string;
+                    type?: string;
+                };
+
+                const { auditService } = await import('../services/AuditService.js');
+                const events = auditService.getEvents({
+                    ...(correlationId && { correlationId }),
+                    ...(method && { method }),
+                    ...(status && { status: status as any }),
+                    ...(type && { type: type as any })
+                });
+
+                return res.send({ events, count: events.length });
+            });
+
+            this.fastify.delete('/testing/audit', async (req, res) => {
+                const { auditService } = await import('../services/AuditService.js');
+                auditService.clear();
+                return res.send({ cleared: true });
+            });
         }
     }
 

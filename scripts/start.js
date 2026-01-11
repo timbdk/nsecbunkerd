@@ -3,9 +3,10 @@ const fs = require('fs');
 
 try {
   console.log(`Running migrations`);
-  // check if config folder exists
-  if (!fs.existsSync('./config')) {
-    execSync(`mkdir config`);
+  // Ensure config folder exists at the absolute path used by DATABASE_URL
+  const configPath = '/app/config';
+  if (!fs.existsSync(configPath)) {
+    execSync(`mkdir -p ${configPath}`);
   }
   console.log(`Generating Prisma Client...`);
   execSync('npx prisma generate', { stdio: 'inherit' });

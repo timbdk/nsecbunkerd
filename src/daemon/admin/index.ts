@@ -423,15 +423,16 @@ async function pingOrDie(ndk: NDK) {
     function resetDeath() {
         if (deathTimer) clearTimeout(deathTimer);
         deathTimer = setTimeout(() => {
-            console.log(`❌ No ping event received in 30 seconds. Exiting.`);
-            process.exit(1);
+            console.log(`⚠️  No ping event received in 50 seconds. Connection may be degraded.`);
+            // Monitoring only - no longer exits
         }, 50000);
     }
 
     const self = await ndk.signer!.user();
     const sub = ndk.subscribe({
         authors: [self.pubkey],
-        kinds: [NDKKind.NostrConnect],
+        kinds: [1],  // Regular notes
+        "#t": ["nsecbunker-ping"],  // Filter by tag
         "#p": [self.pubkey]
     });
     sub.on("event", (event: NDKEvent) => {
@@ -444,15 +445,15 @@ async function pingOrDie(ndk: NDK) {
 
     setInterval(() => {
         const event = new NDKEvent(ndk, {
-            kind: NDKKind.NostrConnect,
-            tags: [["p", self.pubkey]],
+            kind: 1,  // Regular note - won't trigger NIP-46 RPC handler
+            tags: [["p", self.pubkey], ["t", "nsecbunker-ping"]],
             content: "ping"
         } as NostrEvent);
         event.publish().then(() => {
             console.log(`🔔 Sent ping event:`, event.created_at);
         }).catch((e: any) => {
-            console.log(`❌ Failed to send ping event:`, e.message);
-            process.exit(1);
+            console.log(`⚠️  Failed to send ping event:`, e.message);
+            // Monitoring only - no longer exits
         });
     }, 20000);
 }
