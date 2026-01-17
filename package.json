@@ -9,7 +9,7 @@
   },
   "files": [
     "dist",
-    "scripts/start.js",
+    "scripts/start.ts",
     "prisma/schema.prisma",
     "LICENSE",
     "README.md"
@@ -24,8 +24,8 @@
     "prisma:generate": "npx prisma generate",
     "prisma:migrate": "npx prisma migrate deploy",
     "prisma:create": "npx prisma db push --preview-feature",
-    "start": "node ./scripts/start.js",
-    "lfg": "node ./scripts/start.js start",
+    "start": "bun ./scripts/start.ts",
+    "lfg": "bun ./scripts/start.ts start",
     "nsecbunkerd": "node dist/index.js",
     "client": "node dist/client/client.js"
   },
