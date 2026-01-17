@@ -11,22 +11,32 @@ interface NsecbunkerConfig {
 }
 
 try {
-    console.log(`[SIGNER:MIGRATION] Starting migration process`);
-    console.log(`[SIGNER:MIGRATION] DATABASE_URL: ${process.env.DATABASE_URL || 'not set'}`);
+    console.log(`[SIGNER] Starting...`);
 
     // Ensure config folder exists at the absolute path used by DATABASE_URL
     const configPath = '/app/config';
     if (!fs.existsSync(configPath)) {
-        console.log(`[SIGNER:MIGRATION] Creating config directory: ${configPath}`);
+        console.log(`[SIGNER] Creating config directory: ${configPath}`);
         execSync(`mkdir -p ${configPath}`);
     }
 
-    // Note: Prisma Client is pre-generated at Docker build time (see Dockerfile)
-    // This avoids network calls at runtime which caused ECONNRESET flakiness
-    console.log(`[SIGNER:MIGRATION] Running migrations...`);
-    execSync('npm run prisma:migrate', { stdio: 'inherit' });
+    // Database paths
+    const dbPath = `${configPath}/nsecbunker.db`;
+    const templatePath = '/app/prisma/template.db';
 
-    console.log(`[SIGNER:MIGRATION] ✅ Migrations completed successfully`);
+    // Check if we should use pre-baked template or run migrations
+    if (!fs.existsSync(dbPath) && fs.existsSync(templatePath)) {
+        // Fast path: Use pre-baked template (testing with tmpfs)
+        console.log(`[SIGNER] Using pre-baked database template`);
+        fs.copyFileSync(templatePath, dbPath);
+        console.log(`[SIGNER] ✅ Database ready (from template)`);
+    } else {
+        // Normal path: Run migrations (dev/prod with persistent volumes)
+        // Note: Prisma Client is pre-generated at Docker build time (see Dockerfile)
+        console.log(`[SIGNER:MIGRATION] Running migrations...`);
+        execSync('npm run prisma:migrate', { stdio: 'inherit' });
+        console.log(`[SIGNER:MIGRATION] ✅ Migrations completed successfully`);
+    }
 } catch (error: unknown) {
     // Log detailed error information for debugging
     console.error(`[SIGNER:MIGRATION] ❌ MIGRATION FAILED`);
