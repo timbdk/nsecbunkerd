@@ -44,36 +44,42 @@ export async function setupSkeletonProfile(key: NDKPrivateKeySigner, profile: ND
         signer: key
     });
 
-    await ndk.connect(2500);
+    await ndk.connect(5000);
     user.ndk = ndk;
 
-    let event = new NDKEvent(ndk, {
-        kind: 0,
-        content: JSON.stringify(profile),
-        pubkey: user.pubkey,
-    } as NostrEvent);
-    await event.sign(key);
+    try {
+        let event = new NDKEvent(ndk, {
+            kind: 0,
+            content: JSON.stringify(profile),
+            pubkey: user.pubkey,
+        } as NostrEvent);
+        await event.sign(key);
 
-    const t = await event.publish();
-    debug(`Published to ${t.size} relays`);
+        const t = await event.publish();
+        debug(`Published to ${t.size} relays`);
 
-    event = new NDKEvent(ndk, {
-        kind: 3,
-        tags: [
-            ['p', 'fa984bd7dbb282f07e16e7ae87b26a2a7b9b90b7246a44771f0cf5ae58018f52'],
-            ['p', user.pubkey],
-        ],
-        pubkey: user.pubkey,
-    } as NostrEvent);
-    await event.sign(key);
-    debug(`follow list event`, event.rawEvent());
-    await event.publish();
+        event = new NDKEvent(ndk, {
+            kind: 3,
+            tags: [
+                ['p', 'fa984bd7dbb282f07e16e7ae87b26a2a7b9b90b7246a44771f0cf5ae58018f52'],
+                ['p', user.pubkey],
+            ],
+            pubkey: user.pubkey,
+        } as NostrEvent);
+        await event.sign(key);
+        debug(`follow list event`, event.rawEvent());
+        await event.publish();
 
-    const relays = new NDKEvent(ndk, {
-        kind: 10002,
-        tags: explicitRelayUrls.map(url => ['r', url]),
-        pubkey: user.pubkey,
-    } as NostrEvent);
-    await relays.sign(key);
-    await relays.publish();
+        const relays = new NDKEvent(ndk, {
+            kind: 10002,
+            tags: explicitRelayUrls.map(url => ['r', url]),
+            pubkey: user.pubkey,
+        } as NostrEvent);
+        await relays.sign(key);
+        await relays.publish();
+    } finally {
+        if (ndk.pool) {
+            ndk.pool.relays.forEach(relay => relay.disconnect());
+        }
+    }
 }

@@ -75,7 +75,7 @@ async function validateDomain(domain: string | undefined, admin: AdminInterface,
 
 export default async function createAccount(admin: AdminInterface, req: NDKRpcRequest) {
     // params: [username, domain, email?, clientPubkey?, correlationId?]
-    let [ username, domain, email, clientPubkey, correlationId ] = req.params as [ string?, string?, string?, string?, string? ];
+    let [username, domain, email, clientPubkey, correlationId] = req.params as [string?, string?, string?, string?, string?];
 
     // Log with correlationId for tracing
     debug(`[${correlationId?.slice(0, 8) || 'no-corr'}] create_account request from ${req.pubkey.slice(0, 16)}...`);
@@ -91,7 +91,7 @@ export default async function createAccount(admin: AdminInterface, req: NDKRpcRe
     }
 
     const nip05 = `${username}@${domain}`;
-    const payload: string[] = [ username, domain ];
+    const payload: string[] = [username, domain];
     if (email) payload.push(email);
     if (clientPubkey) payload.push(clientPubkey);
 
@@ -144,7 +144,7 @@ export async function createAccountReal(
 ): Promise<void> {
     const { auditService } = await import('../../../services/AuditService.js');
     const scope = auditService.createScope(req.id, 'create_account');
-    
+
     scope.logReceived({
         clientPubkey,
         requestEventId: req.event.id,
@@ -210,18 +210,22 @@ export async function createAccountReal(
                 domainConfig.wallet,
                 username, domain, generatedUser.npub
             ).then((lnaddress) => {
-                debug(`wallet for ${nip05}`, {lnaddress});
+                debug(`wallet for ${nip05}`, { lnaddress });
                 if (lnaddress) profile.lud16 = lnaddress;
             }).catch((e) => {
                 debug(`error generating wallet for ${nip05}`, e);
             }).finally(() => {
                 debug(`saving profile for ${nip05}`, profile);
-                setupSkeletonProfile(key, profile, email, currentConfig.nostr.relays);
+                setupSkeletonProfile(key, profile, email, currentConfig.nostr.relays).catch((e) => {
+                    debug('error setting up skeleton profile (wallet flow)', e);
+                });
             })
         } else {
             debug(`no wallet configuration for ${domain}`);
             // Create user profile
-            setupSkeletonProfile(key, profile, email, currentConfig.nostr.relays);
+            setupSkeletonProfile(key, profile, email, currentConfig.nostr.relays).catch((e) => {
+                debug('error setting up skeleton profile (no wallet)', e);
+            });
         }
 
         const keyName = nip05;
@@ -272,7 +276,7 @@ async function grantPermissions(req: NDKRpcRequest, keyName: string, clientPubke
     await allowAllRequestsFromKey(req.pubkey, keyName, "sign_event", undefined, "registrar", { kind: 'all' });
     await allowAllRequestsFromKey(req.pubkey, keyName, "encrypt", undefined, "registrar");
     await allowAllRequestsFromKey(req.pubkey, keyName, "decrypt", undefined, "registrar");
-    
+
     // Grant permissions to the client's ephemeral keypair
     // This allows the web browser that initiated registration to immediately connect
     if (clientPubkey) {
