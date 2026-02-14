@@ -1,5 +1,5 @@
-import NDK, { NDKEvent, NDKPrivateKeySigner, NostrEvent, type NDKUserProfile } from "@nostr-dev-kit/ndk";
-import * as CryptoJS from 'crypto-js';
+import NDK, { NDKEvent, NDKPrivateKeySigner, type NostrEvent, type NDKUserProfile } from "@nostr-dev-kit/ndk";
+import crypto from 'crypto';
 import createDebug from "debug";
 
 const debug = createDebug("nsecbunker:profile");
@@ -29,9 +29,8 @@ export async function setupSkeletonProfile(key: NDKPrivateKeySigner, profile: ND
     if (email) {
         try {
             const trimmedEmail = email.trim().toLowerCase();
-            const hash = CryptoJS.MD5(trimmedEmail);
-            const shash = hash.toString(CryptoJS.enc.Hex);
-            profile.image = `https://robohash.org/${shash}?gravatar=hashed&set=set5`;
+            const hash = crypto.createHash('md5').update(trimmedEmail).digest('hex');
+            profile.image = `https://robohash.org/${hash}?gravatar=hashed&set=set5`;
             debug('fetching gravatar', profile.image);
         } catch (e) {
             debug('error fetching gravatar', e);

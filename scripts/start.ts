@@ -1,4 +1,4 @@
-import { execSync, spawn, type ChildProcess } from 'child_process';
+import { execSync } from 'child_process';
 import * as fs from 'fs';
 
 interface NsecbunkerConfig {
@@ -11,12 +11,9 @@ interface NsecbunkerConfig {
 }
 
 try {
-    console.log(`[SIGNER] Starting...`);
-
     // Ensure config folder exists at the absolute path used by DATABASE_URL
     const configPath = '/app/config';
     if (!fs.existsSync(configPath)) {
-        console.log(`[SIGNER] Creating config directory: ${configPath}`);
         execSync(`mkdir -p ${configPath}`);
     }
 
@@ -27,31 +24,12 @@ try {
     // Check if we should use pre-baked template or run migrations
     if (!fs.existsSync(dbPath) && fs.existsSync(templatePath)) {
         // Fast path: Use pre-baked template (testing with tmpfs)
-        console.log(`[SIGNER] Using pre-baked database template`);
         fs.copyFileSync(templatePath, dbPath);
-        console.log(`[SIGNER] ✅ Database ready (from template)`);
-    } else {
-        // Normal path: Run migrations (dev/prod with persistent volumes)
-        // Note: Prisma Client is pre-generated at Docker build time (see Dockerfile)
-        console.log(`[SIGNER:MIGRATION] Running migrations...`);
-        execSync('npm run prisma:migrate', { stdio: 'inherit' });
-        console.log(`[SIGNER:MIGRATION] ✅ Migrations completed successfully`);
     }
 } catch (error: unknown) {
-    // Log detailed error information for debugging
-    console.error(`[SIGNER:MIGRATION] ❌ MIGRATION FAILED`);
-    console.error(`[SIGNER:MIGRATION] Timestamp: ${new Date().toISOString()}`);
-
+    // Log fatal error to stderr
     const err = error as { message?: string; stderr?: Buffer; stdout?: Buffer };
-    console.error(`[SIGNER:MIGRATION] Error: ${err.message || error}`);
-    if (err.stderr) {
-        console.error(`[SIGNER:MIGRATION] stderr: ${err.stderr.toString()}`);
-    }
-    if (err.stdout) {
-        console.error(`[SIGNER:MIGRATION] stdout: ${err.stdout.toString()}`);
-    }
-    console.error(`[SIGNER:MIGRATION] DATABASE_URL: ${process.env.DATABASE_URL || 'not set'}`);
-    console.error(`[SIGNER:MIGRATION] Exiting due to migration failure`);
+    console.error(`[MIGRATION] Error: ${err.message || error}`);
     process.exit(1);
 }
 
@@ -70,7 +48,6 @@ if (runtimeConfigArg && fs.existsSync(runtimeConfigArg)) {
         const relays = process.env.RELAYS;
         if (relays) {
             const relayList = relays.split(',').map((r) => r.trim());
-            console.log(`Applying RELAYS override: ${relayList.join(', ')}`);
             config.nostr = config.nostr || {};
             config.nostr.relays = relayList;
             config.admin = config.admin || {};
@@ -80,7 +57,6 @@ if (runtimeConfigArg && fs.existsSync(runtimeConfigArg)) {
         // Write to runtime location (tmpfs in testing, ./config in dev)
         const runtimeConfigPath = '/app/config/nsecbunker-runtime.json';
         fs.writeFileSync(runtimeConfigPath, JSON.stringify(config, null, 2));
-        console.log(`Runtime config written to ${runtimeConfigPath}`);
 
         // Update args to use runtime config
         args[configArgIndex + 1] = runtimeConfigPath;
@@ -90,11 +66,10 @@ if (runtimeConfigArg && fs.existsSync(runtimeConfigArg)) {
         // Continue with original config path (will fail if read-only)
     }
 }
+// Link process.argv[1] to the actual dist file (relative to CWD /app)
+// This is used by yargs to determine the script name
+process.argv = [process.execPath, './dist/index.js', ...args];
 
-const childProcess: ChildProcess = spawn('node', ['./dist/index.js', ...args], {
-    stdio: 'inherit',
-});
-
-childProcess.on('exit', (code: number | null) => {
-    process.exit(code ?? 1);
-});
+// Load the application directly in-process.
+// ESM import relative to THIS file (/app/scripts/start.ts)
+await import('../dist/index.js');

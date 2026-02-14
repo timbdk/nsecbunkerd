@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import 'websocket-polyfill';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 
@@ -38,7 +37,7 @@ const argv = yargs(hideBin(process.argv))
             keys: argv.key as string[],
             verbose: argv.verbose as boolean,
             config: argv.config as string,
-            adminNpubs: [...new Set([...((argv.admin||[]) as string[]), ...adminNpubs])]
+            adminNpubs: [...new Set([...((argv.admin || []) as string[]), ...adminNpubs])]
         });
     })
 

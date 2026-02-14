@@ -4,7 +4,9 @@ import { allowAllRequestsFromKey } from "../../lib/acl/index.js"
 import prisma from "../../../db.js"
 import createDebug from "debug"
 
-const debug = createDebug("nsecbunker:authorizeClient")
+import { log } from '../../../lib/logger.js';
+
+// const debug = createDebug("nsecbunker:authorizeClient") // Replaced by log.admin
 
 /**
  * Authorizes a client pubkey to perform signing operations with a user's key.
@@ -20,6 +22,7 @@ const debug = createDebug("nsecbunker:authorizeClient")
  * - correlationId: Optional correlation ID for tracing across services
  */
 export default async function authorizeClient(admin: AdminInterface, req: NDKRpcRequest) {
+    console.log('FORCE LOG: authorizeClient called', { id: req.id, pubkey: req.pubkey });
     const [keyName, userPubkey, clientPubkey, correlationId] = req.params as [string, string, string, string?]
     const corrPrefix = `[${correlationId?.slice(0, 8) || 'no-corr'}]`
 
@@ -27,7 +30,7 @@ export default async function authorizeClient(admin: AdminInterface, req: NDKRpc
     const scope = auditService.createScope(req.id, 'authorize_client');
 
     if (!keyName || !userPubkey || !clientPubkey) {
-        debug(`${corrPrefix} Invalid params: keyName=${keyName}, userPubkey=${userPubkey?.slice(0, 16)}, clientPubkey=${clientPubkey?.slice(0, 16)}`)
+        log.admin(`${corrPrefix} Invalid params: keyName=${keyName}, userPubkey=${userPubkey?.slice(0, 16)}, clientPubkey=${clientPubkey?.slice(0, 16)}`)
         scope.logError(new Error('Invalid params'), { keyName, userPubkey, clientPubkey });
         return admin.rpc.sendResponse(
             req.id,
@@ -46,19 +49,19 @@ export default async function authorizeClient(admin: AdminInterface, req: NDKRpc
         details: { keyName }
     });
 
-    debug(`${corrPrefix} Authorizing client ${clientPubkey.slice(0, 16)}... for key ${keyName}`)
+    log.admin(`${corrPrefix} Authorizing client ${clientPubkey.slice(0, 16)}... for key ${keyName}`)
 
     // Verify the key exists
     const key = await prisma.key.findUnique({ where: { keyName } })
     if (!key) {
-        debug(`Key not found: ${keyName}`)
+        log.admin(`Key not found: ${keyName}`)
         scope.logError(new Error('Key not found'), { keyName });
         return admin.rpc.sendResponse(req.id, req.pubkey, "error", NDKKind.NostrConnect, `Key not found: ${keyName}`)
     }
 
     // Verify the userPubkey matches (ensures the requester knows the correct user)
     if (key.pubkey !== userPubkey) {
-        debug(`Pubkey mismatch: expected ${key.pubkey.slice(0, 16)}..., got ${userPubkey.slice(0, 16)}...`)
+        log.admin(`Pubkey mismatch: expected ${key.pubkey.slice(0, 16)}..., got ${userPubkey.slice(0, 16)}...`)
         scope.logError(new Error('Pubkey mismatch'), { expected: key.pubkey, got: userPubkey });
         return admin.rpc.sendResponse(req.id, req.pubkey, "error", NDKKind.NostrConnect, "User pubkey mismatch")
     }
@@ -70,7 +73,7 @@ export default async function authorizeClient(admin: AdminInterface, req: NDKRpc
         await allowAllRequestsFromKey(clientPubkey, keyName, "encrypt", undefined, "client authorization")
         await allowAllRequestsFromKey(clientPubkey, keyName, "decrypt", undefined, "client authorization")
 
-        debug(`Client ${clientPubkey.slice(0, 16)}... authorized for key ${keyName}`)
+        log.admin(`Client ${clientPubkey.slice(0, 16)}... authorized for key ${keyName}`)
 
         scope.logResponse({
             clientPubkey,
@@ -81,7 +84,7 @@ export default async function authorizeClient(admin: AdminInterface, req: NDKRpc
         return admin.rpc.sendResponse(req.id, req.pubkey, "authorized", NDKKind.NostrConnect)
 
     } catch (e: any) {
-        debug(`Error authorizing client: ${e.message}`)
+        log.admin(`Error authorizing client: ${e.message}`)
         scope.logError(e, { keyName, clientPubkey });
         return admin.rpc.sendResponse(req.id, req.pubkey, "error", NDKKind.NostrConnect, e.message)
     }

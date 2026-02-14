@@ -1,6 +1,6 @@
 import { Hexpubkey, NDKKind, NDKPrivateKeySigner, NDKRpcRequest, NDKUserProfile, NDKUser } from "@nostr-dev-kit/ndk";
 import AdminInterface from "..";
-import { nip19 } from 'nostr-tools';
+import { hexToBytes } from '@noble/hashes/utils';
 import { setupSkeletonProfile } from "../../lib/profile";
 import { IConfig, getCurrentConfig } from "../../../config";
 import { allowAllRequestsFromKey } from "../../lib/acl";
@@ -230,7 +230,7 @@ export async function createAccountReal(
 
         const keyName = nip05;
         const privateKeyHex = key.privateKey!;
-        const nsec = nip19.nsecEncode(privateKeyHex);
+        const nsec = hexToNsec(privateKeyHex);
 
         // Backup-first: encrypt and backup before local storage
         debug(`Encrypting key for ${keyName}`);

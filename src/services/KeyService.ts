@@ -6,7 +6,8 @@
  */
 
 import crypto from 'crypto';
-import { nip19 } from 'nostr-tools';
+import { nip19, getPublicKey } from 'nostr-tools';
+import { hexToBytes } from '@noble/hashes/utils';
 import prisma from '../db.js';
 
 const ALGORITHM = 'aes-256-gcm';
@@ -149,7 +150,7 @@ export async function retrieveKey(keyName: string): Promise<string | null> {
  * Convert hex private key to nsec format.
  */
 export function hexToNsec(privateKeyHex: string): string {
-    return nip19.nsecEncode(privateKeyHex);
+    return nip19.nsecEncode(hexToBytes(privateKeyHex));
 }
 
 /**
@@ -185,8 +186,7 @@ export async function validateAllKeys(): Promise<{
             );
 
             // Verify the decrypted key produces the correct pubkey
-            const { getPublicKey } = await import('nostr-tools');
-            const derivedPubkey = getPublicKey(decryptedHex);
+            const derivedPubkey = getPublicKey(hexToBytes(decryptedHex));
 
             if (derivedPubkey !== key.pubkey) {
                 console.error(

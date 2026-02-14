@@ -1,6 +1,7 @@
 import NDK, { NDKEvent, NDKPrivateKeySigner, Nip46PermitCallback, Nip46PermitCallbackParams } from '@nostr-dev-kit/ndk';
 import { log, auditSigningRequest, logStartup, logError } from '../lib/logger.js';
 import { nip19 } from 'nostr-tools';
+import { bytesToHex } from '@noble/hashes/utils';
 import { Backend } from './backend/index.js';
 import {
     IMethod,
@@ -10,6 +11,7 @@ import AdminInterface from './admin/index.js';
 import { IConfig } from '../config/index.js';
 import { NDKRpcRequest } from '@nostr-dev-kit/ndk';
 import prisma from '../db.js';
+// Force rebuild for logging
 import { DaemonConfig } from './index.js';
 import { decryptNsec } from '../config/keys.js';
 import { requestAuthorization } from './authorize.js';
@@ -39,7 +41,7 @@ function getKeys(config: DaemonConfig) {
         const keys: Key[] = [];
 
         for (const [name, nsec] of Object.entries(config.keys)) {
-            const hexpk = nip19.decode(nsec).data as string;
+            const hexpk = nip19.decode(nsec).data as Uint8Array;
             const user = await new NDKPrivateKeySigner(hexpk).user();
             const key = {
                 name,
@@ -102,7 +104,9 @@ function getKeyUsers(config: IConfig) {
 function signingAuthorizationCallback(keyName: string, adminInterface: AdminInterface): Nip46PermitCallback {
     return async (p: Nip46PermitCallbackParams): Promise<boolean> => {
         const { id, method, pubkey: remotePubkey, params: payload } = p;
-        log.signing(`Request ${id}: ${method} by ${remotePubkey.slice(0, 16)}... for ${keyName}`);
+        const msg = `Request ${id}: ${method} by ${remotePubkey.slice(0, 16)}... for ${keyName}`;
+        console.log(`[SIGNER:SIGNING] ${msg}`);
+        log.signing(msg);
 
         if (!adminInterface.requestPermission) {
             throw new Error('adminInterface.requestPermission is not defined');
@@ -132,8 +136,8 @@ function signingAuthorizationCallback(keyName: string, adminInterface: AdminInte
                     method,
                     payload
                 )
-                .then(() => resolve(true))
-                .catch(() => resolve(false));
+                    .then(() => resolve(true))
+                    .catch(() => resolve(false));
             });
         } catch (e: any) {
             logError('signing', `Authorization callback error for ${keyName}`, e);
@@ -184,10 +188,14 @@ class Daemon {
             log.daemon('Daemon NDK Signer configured with Master Key');
             this.ndk.signer = new NDKPrivateKeySigner(process.env.SIGNER_MASTER_KEY);
         }
-        this.ndk.pool.on('relay:connect', (r) => log.daemon(`Connected to ${r.url}`));
+        this.ndk.pool.on('relay:connect', (r) => {
+            console.log(`[SIGNER] ✅ Connected to ${r.url}`);
+            log.daemon(`Connected to ${r.url}`);
+        });
         this.ndk.pool.on('relay:notice', (n, r) => log.daemon(`Notice from ${r.url}: ${n}`));
 
         this.ndk.pool.on('relay:disconnect', (r) => {
+            console.log(`[SIGNER] ❌ Disconnected from ${r.url}`);
             log.daemon(`Disconnected from ${r.url}`);
         });
     }
@@ -256,8 +264,9 @@ class Daemon {
                     const { storeKey } = await import('../services/KeyService.js');
                     const { allowAllRequestsFromKey } = await import('./lib/acl/index.js');
 
-                    // Decode nsec to hex
-                    const privateKeyHex = nip19.decode(nsec).data as string;
+                    // Decode nsec to private key bytes
+                    const privateKeyBytes = nip19.decode(nsec).data as Uint8Array;
+                    const privateKeyHex = bytesToHex(privateKeyBytes);
 
                     // Store encrypted in DB
                     await storeKey(keyName, privateKeyHex, pubkey);

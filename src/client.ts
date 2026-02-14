@@ -1,4 +1,3 @@
-import "websocket-polyfill";
 import NDK, { NDKUser, NDKEvent, NDKPrivateKeySigner, NDKNip46Signer, NostrEvent } from '@nostr-dev-kit/ndk';
 import fs from 'fs';
 
@@ -83,7 +82,7 @@ function loadPrivateKey(): string | undefined {
     // if this is the create_account command and we have something that doesn't look like an npub as the remotePubkey, use NDKUser.fromNip05 to get the npub
     if (command === 'create_account' && !remotePubkey.startsWith("npub")) {
         // see if we have a username@domain
-        let [ username, domain ] = remotePubkey.split('@');
+        let [username, domain] = remotePubkey.split('@');
 
         if (!domain) {
             domain = username;
@@ -110,11 +109,11 @@ function loadPrivateKey(): string | undefined {
             remoteUser = u;
             remotePubkey = remoteUser.pubkey;
         } else {
-            remoteUser = new NDKUser({npub: remotePubkey});
+            remoteUser = new NDKUser({ npub: remotePubkey });
         }
     }
 
-    
+
     let localSigner: NDKPrivateKeySigner;
 
     const pk = loadPrivateKey();
@@ -145,10 +144,10 @@ function loadPrivateKey(): string | undefined {
 })();
 
 async function createAccountFlow() {
-    const [ username, domain, email ] = content.split(',').map((s) => s.trim());
+    const [username, domain, email] = content.split(',').map((s) => s.trim());
     try {
         const pubkey = await signer.createAccount(username, domain, email);
-        const user = new NDKUser({pubkey});
+        const user = new NDKUser({ pubkey });
         console.log(`Hello`, user.npub);
     } catch (e) {
         console.log('error', e);
@@ -160,7 +159,7 @@ function signFlow() {
         try {
             if (debug) console.log(`waiting for authorization (check your nsecBunker)...`);
             await signer.blockUntilReady();
-        } catch(e) {
+        } catch (e) {
             console.log('error:', e);
             process.exit(1);
         }
@@ -192,12 +191,12 @@ function signFlow() {
                 console.log(event.sig);
             }
 
-	    if (!dontPublish) {
-            const relaysPublished = await event.publish();
-	    }
+            if (!dontPublish) {
+                const relaysPublished = await event.publish();
+            }
 
             process.exit(0);
-        } catch(e) {
+        } catch (e) {
             console.log('sign error', e);
         }
     }, 2000);

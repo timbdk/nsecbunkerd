@@ -1,6 +1,4 @@
-import "websocket-polyfill";
-import NDK, { NDKEvent, NDKKind, NDKPrivateKeySigner, NDKRpcRequest, NDKRpcResponse, NDKUser, NostrEvent } from '@nostr-dev-kit/ndk';
-import { NDKNostrRpc } from '@nostr-dev-kit/ndk';
+import NDK, { NDKEvent, NDKKind, NDKPrivateKeySigner, NDKRpcRequest, NDKRpcResponse, NDKUser, NostrEvent, NDKNostrRpc } from '@nostr-dev-kit/ndk';
 import createDebug from 'debug';
 import { Key, KeyUser } from '../run';
 import { allowAllRequestsFromKey } from '../lib/acl/index.js';
@@ -17,7 +15,11 @@ import { IConfig, getCurrentConfig } from "../../config";
 import path from 'path';
 
 
-const debug = createDebug("nsecbunker:admin");
+import { log } from '../../lib/logger.js';
+
+// import { log } from '../../lib/logger.js';
+
+// const debug = createDebug("nsecbunker:admin"); // Replaced by log.admin // Replaced by log.admin
 
 export type IAdminOpts = {
     npubs: string[];
@@ -73,7 +75,7 @@ class AdminInterface {
             const configFolder = path.dirname(configFile)
             try {
                 fs.writeFileSync(path.join(configFolder, 'connection.txt'), connectionString);
-            } catch(e) { /* ignore read-only */ }
+            } catch (e) { /* ignore read-only */ }
 
             this.signerUser = user;
 
@@ -86,7 +88,7 @@ class AdminInterface {
             });
         });
 
-        this.rpc = new NDKNostrRpc(this.ndk, this.ndk.signer!, debug);
+        this.rpc = new NDKNostrRpc(this.ndk, this.ndk.signer!, log.admin);
     }
 
     public async config(): Promise<IConfig> {
@@ -119,8 +121,8 @@ class AdminInterface {
             return;
         }
 
-        this.ndk.pool.on('relay:connect', () => console.log('✅ nsecBunker Admin Interface ready'));
-        this.ndk.pool.on('relay:disconnect', () => console.log('❌ admin disconnected'));
+        this.ndk.pool.on('relay:connect', (r) => console.log(`✅ nsecBunker Admin Interface ready (connected to ${r.url})`));
+        this.ndk.pool.on('relay:disconnect', (r) => console.log(`❌ admin disconnected from ${r.url}`));
         this.ndk.connect(2500).then(() => {
             // connect for whitelisted admins
             this.rpc.subscribe({
@@ -133,7 +135,7 @@ class AdminInterface {
             pingOrDie(this.ndk);
         }).catch((err) => {
             console.log('❌ admin connection failed');
-            console.log(err);
+            console.error(err);
         });
     }
 
@@ -164,7 +166,7 @@ class AdminInterface {
                     );
             }
         } catch (err: any) {
-            debug(`Error handling request ${req.method}: ${err?.message ?? err}`, req.params);
+            log.admin(`Error handling request ${req.method}: ${err?.message ?? err}`, req.params);
             return this.rpc.sendResponse(req.id, req.pubkey, "error", NDKKind.NostrConnectAdmin, err?.message);
         }
     }
