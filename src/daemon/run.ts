@@ -22,6 +22,13 @@ import Handlebars from "handlebars";
 import { authorizeRequestWebHandler, processRequestWebHandler } from "./web/authorize.js";
 import { processRegistrationWebHandler } from "./web/authorize.js";
 
+// Inject serialization prefix from environment (FATAL if missing)
+if (!process.env.VERITY_SERIALIZATION_PREFIX) {
+    console.error('[FATAL] VERITY_SERIALIZATION_PREFIX not set');
+    process.exit(1);
+}
+(globalThis as any).VERITY_SERIALIZATION_PREFIX = Number(process.env.VERITY_SERIALIZATION_PREFIX);
+
 export type Key = {
     name: string;
     npub?: string;
