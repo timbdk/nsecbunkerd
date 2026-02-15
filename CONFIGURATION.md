@@ -33,4 +33,3 @@ All properties are optional unless otherwise specified.
 `domains.$domain.nip05`: The file pointing to the domain's NIP-05 file.
 
 `keys`: Keys are stored in this object. Encrypted keys are stored as `keys.$keyId.iv` + `keys.$keyId.data`. Unecrypted (recoverable) keys are stored as `keys.$keyId.key`.
-

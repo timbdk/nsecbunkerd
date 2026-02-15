@@ -2,6 +2,7 @@
   "name": "verity-event-signing-service",
   "version": "0.10.5",
   "description": "Verity NIP-46 event signing service",
+  "author": "pablof7z (Original Author - We forked for Verity)",
   "main": "dist/index.js",
   "bin": {
     "nsecbunkerd": "dist/index.js",
@@ -17,6 +18,7 @@
   "scripts": {
     "build": "tsup src/index.ts --clean; tsup src/daemon/index.ts -d dist/daemon; tsup src/client.ts -d dist/client",
     "build:client": "tsup src/client.ts -d dist/client",
+    "format": "prettier --write .",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
     "prisma:create": "prisma db push",
@@ -55,6 +57,7 @@
   "devDependencies": {
     "@types/debug": "4.1.8",
     "@types/node": "^22.0.0",
+    "prettier": "^3.0.0",
     "ts-node": "10.9.1",
     "tsup": "7.2.0",
     "typescript": "^5.5.0"

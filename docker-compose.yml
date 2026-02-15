@@ -1,4 +1,4 @@
-version: "3.3"
+version: '3.3'
 
 services:
   nsecbunkerd:
@@ -13,7 +13,7 @@ services:
     env_file:
       - .env
     ports:
-      - "3000:3000"
+      - '3000:3000'
     depends_on:
       - migrations
 
@@ -24,7 +24,7 @@ services:
     env_file:
       - .env
     restart: no
-    entrypoint: ""
+    entrypoint: ''
     command:
       - npx
       - prisma

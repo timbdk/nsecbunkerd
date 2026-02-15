@@ -1,0 +1,18 @@
+# Package Managers
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+bun.lock
+bun.lockb
+
+# Build output
+dist/
+build/
+coverage/
+
+# Dependencies
+node_modules/
+
+# Database
+prisma/dev.db
+prisma/dev.db-journal

@@ -1,4 +1,5 @@
 # nsecbunkerd
+
 Daemon to remotely sign nostr events using keys.
 
 ## Easy setup via docker compose
@@ -36,7 +37,6 @@ docker compose up
 docker compose up -d
 ```
 
-
 ### Get the connection string
 
 ```shell
@@ -53,6 +53,7 @@ You can visit https://app.nsecbunker.com/ to administrate your nsecBunker remote
 to find the options to add and approve keys from the CLI.
 
 ## Hard setup:
+
 (If you installed via docker you don't need to do any of this, skip to the [Configure](#configure) section)
 
 Node.js v18 or newer is required.
@@ -100,7 +101,7 @@ nsecBunker generated an admin password for you:
 ***************************
 
 You will need this to manage users of your keys.
-````
+```
 
 ## Start
 
@@ -157,9 +158,9 @@ To enable this you'll need to configure a few things on your `nsecbunker.json` c
 
 With this configuration users will be able to:
 
-* create a new key managed by your nsecbunker
-* get an lnbits-based LN wallet
-* get zapping capabilitiyes through nostdress
+- create a new key managed by your nsecbunker
+- get an lnbits-based LN wallet
+- get zapping capabilitiyes through nostdress
 
 For this to work you'll need to run, in addition to `nsecbunkerd`, an lnbits instance and a [nostdress](https://github.com/believethehype/nostdress) instance. Your LNBits **needs to have the user manager extension enabled**.
 
@@ -168,19 +169,20 @@ For this to work you'll need to run, in addition to `nsecbunkerd`, an lnbits ins
 When booting up, the nsecbunkerd will publish a NIP-89 announcement (`kind:31990`), which is the way clients find out about your nsecbunker.
 
 When a bunker provides a wallet and zapping service (`wallet` and `nostdressUrl` are configured), it will add tags:
+
 ```json
 {
-    "tags": [
-        [ "f", "wallet" ],
-        [ "f", "zaps" ]
-    ]
+  "tags": [
+    ["f", "wallet"],
+    ["f", "zaps"]
+  ]
 }
 ```
 
 # Authors
 
-* [pablof7z](nostr:npub1l2vyh47mk2p0qlsku7hg0vn29faehy9hy34ygaclpn66ukqp3afqutajft)
-    * npub1l2vyh47mk2p0qlsku7hg0vn29faehy9hy34ygaclpn66ukqp3afqutajft
+- [pablof7z](nostr:npub1l2vyh47mk2p0qlsku7hg0vn29faehy9hy34ygaclpn66ukqp3afqutajft)
+  - npub1l2vyh47mk2p0qlsku7hg0vn29faehy9hy34ygaclpn66ukqp3afqutajft
 
 # License
 
