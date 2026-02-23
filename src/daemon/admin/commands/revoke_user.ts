@@ -3,6 +3,7 @@ import AdminInterface from '../index.js'
 import { rejectAllRequestsFromKey } from '../../lib/acl/index.js'
 import prisma from '../../../db.js'
 import createDebug from 'debug'
+import { checkpointService } from '../../../services/CheckpointService.js'
 
 const debug = createDebug('nsecbunker:revokeUser')
 
@@ -39,6 +40,16 @@ async function revokeByKeyNameAndPubkey(admin: AdminInterface, req: NDKRpcReques
   try {
     await rejectAllRequestsFromKey(userPubkey, keyName)
     debug(`User ${userPubkey.slice(0, 16)}... revoked from key ${keyName}`)
+
+    checkpointService.broadcast('signer.command.completed', {
+      method: 'revoke_client',
+      keyName,
+    })
+
+    checkpointService.broadcast('signer.response.sent', {
+      method: 'revoke_client',
+    })
+
     return admin.rpc.sendResponse(req.id, req.pubkey, 'revoked', NDKKind.NostrConnect)
   } catch (e: any) {
     debug(`Error revoking user: ${e.message}`)
@@ -65,6 +76,15 @@ async function revokeByKeyUserId(admin: AdminInterface, req: NDKRpcRequest, keyU
     })
 
     const result = JSON.stringify(['ok'])
+
+    checkpointService.broadcast('signer.command.completed', {
+      method: 'revoke_client',
+    })
+
+    checkpointService.broadcast('signer.response.sent', {
+      method: 'revoke_client',
+    })
+
     return admin.rpc.sendResponse(req.id, req.pubkey, result, 24134)
   } catch (e: any) {
     debug(`Error revoking keyUser: ${e.message}`)

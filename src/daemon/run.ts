@@ -10,6 +10,7 @@ import { NDKRpcRequest } from '@nostr-dev-kit/ndk'
 import prisma from '../db.js'
 // Force rebuild for logging
 import { DaemonConfig } from './index.js'
+import { checkpointService } from '../services/CheckpointService.js'
 import { decryptNsec } from '../config/keys.js'
 import { requestAuthorization } from './authorize.js'
 import Fastify, { type FastifyInstance } from 'fastify'
@@ -24,7 +25,7 @@ if (!process.env.VERITY_SERIALIZATION_PREFIX) {
   console.error('[FATAL] VERITY_SERIALIZATION_PREFIX not set')
   process.exit(1)
 }
-;(globalThis as any).VERITY_SERIALIZATION_PREFIX = Number(process.env.VERITY_SERIALIZATION_PREFIX)
+(globalThis as any).VERITY_SERIALIZATION_PREFIX = Number(process.env.VERITY_SERIALIZATION_PREFIX)
 
 export type Key = {
   name: string
@@ -501,6 +502,7 @@ class Daemon {
       log.keys(`Key validation skipped: ${e.message}`)
     }
 
+    checkpointService.start()
     await this.ndk.connect(5000)
     await this.startWebAuth()
     await this.startKeys()

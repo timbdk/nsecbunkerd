@@ -3,6 +3,7 @@ import AdminInterface from '../index.js'
 import { allowAllRequestsFromKey } from '../../lib/acl/index.js'
 import prisma from '../../../db.js'
 import createDebug from 'debug'
+import { checkpointService } from '../../../services/CheckpointService.js'
 
 const debug = createDebug('nsecbunker:authorizeUser')
 
@@ -50,6 +51,16 @@ export default async function authorizeUser(admin: AdminInterface, req: NDKRpcRe
     await allowAllRequestsFromKey(userPubkey, keyName, 'decrypt')
 
     debug(`User ${userPubkey.slice(0, 16)}... authorized for key ${keyName}`)
+
+    checkpointService.broadcast('signer.command.completed', {
+      method: 'authorize_client',
+      keyName,
+    })
+
+    checkpointService.broadcast('signer.response.sent', {
+      method: 'authorize_client',
+    })
+
     return admin.rpc.sendResponse(req.id, req.pubkey, 'authorized', NDKKind.NostrConnect)
   } catch (e: any) {
     debug(`Error authorizing user: ${e.message}`)

@@ -24,6 +24,7 @@ import { IConfig, getCurrentConfig } from '../../config'
 import path from 'path'
 
 import { log } from '../../lib/logger.js'
+import { checkpointService } from '../../services/CheckpointService.js'
 
 // import { log } from '../../lib/logger.js';
 
@@ -154,7 +155,18 @@ class AdminInterface {
 
   private async handleRequest(req: NDKRpcRequest) {
     try {
+      checkpointService.broadcast('signer.event.received', {
+        method: req.method,
+        id: req.id?.substring(0, 16),
+        from: req.pubkey?.substring(0, 16),
+      })
+
       await this.validateRequest(req)
+
+      checkpointService.broadcast('signer.event.validated', {
+        method: req.method,
+        id: req.id?.substring(0, 16),
+      })
 
       switch (req.method) {
         // Core commands (used in production)

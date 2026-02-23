@@ -10,6 +10,7 @@ import prisma from '../../../db'
 import createDebug from 'debug'
 import { encryptPrivateKey, storeKey, hexToNsec, markKeyBackedUp } from '../../../services/KeyService.js'
 import { backupKey } from '../../../services/BackupService.js'
+import { checkpointService } from '../../../services/CheckpointService.js'
 
 const debug = createDebug('nsecbunker:createAccount')
 
@@ -243,11 +244,21 @@ export async function createAccountReal(
     // access it without having to go through an approval flow
     await grantPermissions(req, keyName, clientPubkey)
 
+    checkpointService.broadcast('signer.command.completed', {
+      method: 'create_account',
+      keyName,
+      pubkey: generatedUser.pubkey?.substring(0, 16),
+    })
+
     scope.logResponse({
       userPubkey: generatedUser.pubkey,
       userIdentifier: keyName,
       responseEventId: undefined, // Will be set by rpc layer
       clientPubkey: clientPubkey || req.pubkey
+    })
+
+    checkpointService.broadcast('signer.response.sent', {
+      method: 'create_account',
     })
 
     return admin.rpc.sendResponse(req.id, req.pubkey, generatedUser.pubkey, NDKKind.NostrConnectAdmin)
