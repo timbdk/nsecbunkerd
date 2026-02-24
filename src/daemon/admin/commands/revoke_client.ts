@@ -3,6 +3,7 @@ import AdminInterface from '../index.js'
 import { rejectAllRequestsFromKey } from '../../lib/acl/index.js'
 import prisma from '../../../db.js'
 import createDebug from 'debug'
+import { checkpointService } from '../../../services/CheckpointService.js'
 
 const debug = createDebug('nsecbunker:revokeClient')
 
@@ -47,6 +48,16 @@ export default async function revokeClient(admin: AdminInterface, req: NDKRpcReq
         debug(`All clients revoked for user ${userPubkey.slice(0, 16)}... on key ${keyName}`)
       }
     }
+
+    checkpointService.broadcast('signer.command.completed', {
+      method: 'revoke_client',
+      keyName,
+      pubkey: userPubkey?.substring(0, 16),
+    })
+
+    checkpointService.broadcast('signer.response.sent', {
+      method: 'revoke_client',
+    })
 
     return admin.rpc.sendResponse(req.id, req.pubkey, 'revoked', NDKKind.NostrConnect)
   } catch (e: any) {

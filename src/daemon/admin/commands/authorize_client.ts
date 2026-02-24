@@ -3,6 +3,7 @@ import AdminInterface from '../index.js'
 import { allowAllRequestsFromKey } from '../../lib/acl/index.js'
 import prisma from '../../../db.js'
 import createDebug from 'debug'
+import { checkpointService } from '../../../services/CheckpointService.js'
 
 import { log } from '../../../lib/logger.js'
 
@@ -79,10 +80,20 @@ export default async function authorizeClient(admin: AdminInterface, req: NDKRpc
 
     log.admin(`Client ${clientPubkey.slice(0, 16)}... authorized for key ${keyName}`)
 
+    checkpointService.broadcast('signer.command.completed', {
+      method: 'authorize_client',
+      keyName,
+      pubkey: key.pubkey?.substring(0, 16),
+    })
+
     scope.logResponse({
       clientPubkey,
       userPubkey: key.pubkey,
       userIdentifier: keyName
+    })
+
+    checkpointService.broadcast('signer.response.sent', {
+      method: 'authorize_client',
     })
 
     return admin.rpc.sendResponse(req.id, req.pubkey, 'authorized', NDKKind.NostrConnect)
