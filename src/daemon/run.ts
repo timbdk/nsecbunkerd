@@ -266,12 +266,20 @@ class Daemon {
           const { storeKey } = await import('../services/KeyService.js')
           const { allowAllRequestsFromKey } = await import('./lib/acl/index.js')
 
-          // Decode nsec to private key bytes
-          const privateKeyBytes = nip19.decode(nsec).data as Uint8Array
-          const privateKeyHex = bytesToHex(privateKeyBytes)
+          checkpointService.broadcast('signer.testing.register.received', { keyName, clientPubkey })
+
+          // Decode nsec to private key bytes if bech32, otherwise use as hex
+          let privateKeyHex: string
+          if (nsec.startsWith('nsec1')) {
+            const privateKeyBytes = nip19.decode(nsec).data as Uint8Array
+            privateKeyHex = bytesToHex(privateKeyBytes)
+          } else {
+            privateKeyHex = nsec
+          }
 
           // Store encrypted in DB
           await storeKey(keyName, privateKeyHex, pubkey)
+          checkpointService.broadcast('signer.testing.key_stored', { keyName })
 
           // Grant permissions to client keypair if provided
           if (clientPubkey) {
@@ -282,12 +290,15 @@ class Daemon {
             await allowAllRequestsFromKey(clientPubkey, keyName, 'encrypt', undefined, 'test-client')
             await allowAllRequestsFromKey(clientPubkey, keyName, 'decrypt', undefined, 'test-client')
             console.log(`🧪 Testing: authorized client ${clientPubkey.slice(0, 16)}... for key ${keyName}`)
+            checkpointService.broadcast('signer.testing.client_authorized', { keyName, clientPubkey })
           }
 
-          // Load into active keys for signing
-          this.activeKeys[keyName] = nsec
+          // Load into active keys for signing and start the NDK listener
+          this.loadNsec(keyName, privateKeyHex)
 
           console.log(`🧪 Testing: registered key ${keyName}`)
+
+          checkpointService.broadcast('signer.testing.register.completed', { keyName })
 
           return res.status(201).send({
             success: true,
@@ -316,6 +327,8 @@ class Daemon {
         try {
           const { allowAllRequestsFromKey } = await import('./lib/acl/index.js')
 
+          checkpointService.broadcast('signer.testing.authorize.received', { keyName, clientPubkey })
+
           // Verify the key exists
           const key = await prisma.key.findUnique({ where: { keyName } })
           if (!key) {
@@ -329,6 +342,8 @@ class Daemon {
           await allowAllRequestsFromKey(clientPubkey, keyName, 'decrypt', undefined, 'test-client')
 
           console.log(`🧪 Testing: authorized client ${clientPubkey.slice(0, 16)}... for key ${keyName}`)
+
+          checkpointService.broadcast('signer.testing.authorize.completed', { keyName, clientPubkey })
 
           return res.status(200).send({
             success: true,

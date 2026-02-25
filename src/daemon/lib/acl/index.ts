@@ -122,6 +122,18 @@ export async function allowAllRequestsFromKey(
         ...allowScope
       }
     })
+
+    // Resolve any pending authorization requests for this key/pubkey/method
+    await prisma.request.updateMany({
+      where: {
+        keyName,
+        remotePubkey,
+        method
+      },
+      data: {
+        allowed: true
+      }
+    })
   } catch (e) {
     console.log('allowAllRequestsFromKey', e)
   }
