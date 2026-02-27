@@ -216,8 +216,6 @@ class Daemon {
       }
     })
 
-    this.fastify.listen({ port: this.config.authPort, host: this.config.authHost })
-
     this.fastify.get('/requests/:id', authorizeRequestWebHandler)
     this.fastify.post('/requests/:id', processRequestWebHandler)
     this.fastify.post('/register/:id', processRegistrationWebHandler)
@@ -440,12 +438,48 @@ class Daemon {
         return res.send({ events, count: events.length })
       })
 
+      // Health endpoints for test runner preconditions
+      this.fastify.get('/testing/health/relay', async (req, res) => {
+        const { url } = req.query as { url?: string }
+        if (!url) return res.status(400).send({ error: 'url parameter is required' })
+
+        const decodedUrl = decodeURIComponent(url)
+
+        // NDK normalizes URLs by adding a trailing slash. Try both.
+        const relay = this.ndk.pool.relays.get(decodedUrl)
+          || this.ndk.pool.relays.get(decodedUrl.endsWith('/') ? decodedUrl.slice(0, -1) : decodedUrl + '/')
+
+        if (!relay) {
+          return res.status(404).send({ status: 'not-configured', requested: decodedUrl, pool: Array.from(this.ndk.pool.relays.keys()) })
+        }
+
+        // 5 = CONNECTED, 6 = AUTH_REQUESTED, 7 = AUTHENTICATING
+        if (relay.status >= 5) {
+          return res.send({ status: 'listening' })
+        }
+
+        return res.status(503).send({ status: 'connecting', code: relay.status })
+      })
+
+      this.fastify.get('/testing/health/db', async (req, res) => {
+        try {
+          // simple check to see if prisma is connected
+          await prisma.key.count()
+          return res.send({ status: 'ready' })
+        } catch (e: any) {
+          return res.status(503).send({ status: 'connecting', error: e.message })
+        }
+      })
+
       this.fastify.delete('/testing/audit', async (req, res) => {
         const { auditService } = await import('../services/AuditService.js')
         auditService.clear()
         return res.send({ cleared: true })
       })
     }
+
+    await this.fastify.listen({ port: this.config.authPort, host: this.config.authHost })
+    console.log(`[SIGNER] Web auth server listening on ${this.config.authHost || '0.0.0.0'}:${this.config.authPort}`)
   }
 
   async startKeys() {
