@@ -49,6 +49,13 @@ export default async function authorizeUser(admin: AdminInterface, req: NDKRpcRe
     })
     await allowAllRequestsFromKey(userPubkey, keyName, 'encrypt')
     await allowAllRequestsFromKey(userPubkey, keyName, 'decrypt')
+    // NDK calls these utility methods during blockUntilReady() after the initial 'connect' handshake.
+    // The requests are sent from the client's ephemeral keypair, so authorize_client.ts is the primary
+    // gate. We grant defensively here too: the ACL resolves by (keyName, remotePubkey) and we can't be
+    // certain the NIP-46 backend won't look up the user pubkey for these methods.
+    await allowAllRequestsFromKey(userPubkey, keyName, 'switch_relays')
+    await allowAllRequestsFromKey(userPubkey, keyName, 'get_public_key')
+    await allowAllRequestsFromKey(userPubkey, keyName, 'ping')
 
     debug(`User ${userPubkey.slice(0, 16)}... authorized for key ${keyName}`)
 

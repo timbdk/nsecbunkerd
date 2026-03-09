@@ -277,6 +277,13 @@ async function grantPermissions(req: NDKRpcRequest, keyName: string, clientPubke
   })
   await allowAllRequestsFromKey(req.pubkey, keyName, 'encrypt', undefined, 'registrar')
   await allowAllRequestsFromKey(req.pubkey, keyName, 'decrypt', undefined, 'registrar')
+  // NDK calls these utility methods during blockUntilReady() after the initial 'connect' handshake.
+  // The requests are sent from the client's ephemeral keypair, so authorize_client.ts is the primary
+  // gate. We grant defensively here too: the ACL resolves by (keyName, remotePubkey) and we can't be
+  // certain the NIP-46 backend won't look up the registrar/user pubkey for these methods.
+  await allowAllRequestsFromKey(req.pubkey, keyName, 'switch_relays', undefined, 'registrar')
+  await allowAllRequestsFromKey(req.pubkey, keyName, 'get_public_key', undefined, 'registrar')
+  await allowAllRequestsFromKey(req.pubkey, keyName, 'ping', undefined, 'registrar')
 
   // Grant permissions to the client's ephemeral keypair
   // This allows the web browser that initiated registration to immediately connect
@@ -287,5 +294,8 @@ async function grantPermissions(req: NDKRpcRequest, keyName: string, clientPubke
     })
     await allowAllRequestsFromKey(clientPubkey, keyName, 'encrypt', undefined, 'client')
     await allowAllRequestsFromKey(clientPubkey, keyName, 'decrypt', undefined, 'client')
+    await allowAllRequestsFromKey(clientPubkey, keyName, 'switch_relays', undefined, 'client')
+    await allowAllRequestsFromKey(clientPubkey, keyName, 'get_public_key', undefined, 'client')
+    await allowAllRequestsFromKey(clientPubkey, keyName, 'ping', undefined, 'client')
   }
 }

@@ -287,6 +287,10 @@ class Daemon {
             })
             await allowAllRequestsFromKey(clientPubkey, keyName, 'encrypt', undefined, 'test-client')
             await allowAllRequestsFromKey(clientPubkey, keyName, 'decrypt', undefined, 'test-client')
+            // NDK requires these during blockUntilReady() — without them the daemon hangs on admin approval
+            await allowAllRequestsFromKey(clientPubkey, keyName, 'switch_relays', undefined, 'test-client')
+            await allowAllRequestsFromKey(clientPubkey, keyName, 'get_public_key', undefined, 'test-client')
+            await allowAllRequestsFromKey(clientPubkey, keyName, 'ping', undefined, 'test-client')
             console.log(`🧪 Testing: authorized client ${clientPubkey.slice(0, 16)}... for key ${keyName}`)
             checkpointService.broadcast('signer.testing.client_authorized', { keyName, clientPubkey })
           }
@@ -338,6 +342,10 @@ class Daemon {
           await allowAllRequestsFromKey(clientPubkey, keyName, 'sign_event', undefined, 'test-client', { kind: 'all' })
           await allowAllRequestsFromKey(clientPubkey, keyName, 'encrypt', undefined, 'test-client')
           await allowAllRequestsFromKey(clientPubkey, keyName, 'decrypt', undefined, 'test-client')
+          // NDK requires these during blockUntilReady() — without them the daemon hangs on admin approval
+          await allowAllRequestsFromKey(clientPubkey, keyName, 'switch_relays', undefined, 'test-client')
+          await allowAllRequestsFromKey(clientPubkey, keyName, 'get_public_key', undefined, 'test-client')
+          await allowAllRequestsFromKey(clientPubkey, keyName, 'ping', undefined, 'test-client')
 
           console.log(`🧪 Testing: authorized client ${clientPubkey.slice(0, 16)}... for key ${keyName}`)
 

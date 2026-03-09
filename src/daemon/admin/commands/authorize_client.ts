@@ -23,7 +23,6 @@ import { log } from '../../../lib/logger.js'
  * - correlationId: Optional correlation ID for tracing across services
  */
 export default async function authorizeClient(admin: AdminInterface, req: NDKRpcRequest) {
-  console.log('FORCE LOG: authorizeClient called', { id: req.id, pubkey: req.pubkey })
   const [keyName, userPubkey, clientPubkey, correlationId] = req.params as [string, string, string, string?]
   const corrPrefix = `[${correlationId?.slice(0, 8) || 'no-corr'}]`
 
@@ -77,6 +76,14 @@ export default async function authorizeClient(admin: AdminInterface, req: NDKRpc
     })
     await allowAllRequestsFromKey(clientPubkey, keyName, 'encrypt', undefined, 'client authorization')
     await allowAllRequestsFromKey(clientPubkey, keyName, 'decrypt', undefined, 'client authorization')
+    // NDK calls these utility methods during blockUntilReady() after the initial 'connect' handshake.
+    // Without explicit authorization, the daemon falls through to requestAuthorization() which waits
+    // for manual admin approval — hanging forever and causing the client's connection to timeout.
+    // See: NDKNip46Signer.switchRelays() has a 5s internal timeout that races against the client's
+    // own blockUntilReady timeout, making this the primary cause of intermittent login failures.
+    await allowAllRequestsFromKey(clientPubkey, keyName, 'switch_relays', undefined, 'client authorization')
+    await allowAllRequestsFromKey(clientPubkey, keyName, 'get_public_key', undefined, 'client authorization')
+    await allowAllRequestsFromKey(clientPubkey, keyName, 'ping', undefined, 'client authorization')
 
     log.admin(`Client ${clientPubkey.slice(0, 16)}... authorized for key ${keyName}`)
 

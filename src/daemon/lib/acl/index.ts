@@ -68,7 +68,7 @@ export async function checkIfPubkeyAllowed(
   return undefined
 }
 
-export type IMethod = 'connect' | 'sign_event' | 'encrypt' | 'decrypt' | 'ping'
+export type IMethod = 'connect' | 'sign_event' | 'encrypt' | 'decrypt' | 'ping' | 'switch_relays' | 'get_public_key'
 
 export type IAllowScope = {
   kind?: number | 'all'
