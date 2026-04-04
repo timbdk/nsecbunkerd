@@ -1,11 +1,10 @@
-import { Hexpubkey, NDKKind, NDKPrivateKeySigner, NDKRpcRequest, NDKUserProfile, NDKUser } from '@nostr-dev-kit/ndk'
+import { Hexpubkey, NDKKind, NDKPrivateKeySigner, NDKRpcRequest, NDKUser } from '@nostr-dev-kit/ndk'
 import AdminInterface from '..'
 import { hexToBytes } from '@noble/hashes/utils'
-import { setupSkeletonProfile } from '../../lib/profile'
 import { IConfig, getCurrentConfig } from '../../../config'
 import { allowAllRequestsFromKey } from '../../lib/acl'
 import { requestAuthorization } from '../../authorize'
-import { generateWallet } from './account/wallet'
+import { publishUsernameEvent } from '../../lib/username-event'
 import prisma from '../../../db'
 import createDebug from 'debug'
 import { encryptPrivateKey, storeKey, hexToNsec, markKeyBackedUp } from '../../../services/KeyService.js'
@@ -180,43 +179,12 @@ export async function createAccountReal(
 
     const nip05 = `${username}@${domain}`
     const key = NDKPrivateKeySigner.generate()
-    const profile: NDKUserProfile = {
-      display_name: username,
-      name: username,
-      nip05,
-      ...(domainConfig.defaultProfile || {})
-    }
-
     const generatedUser = await key.user()
 
     debug(`Created user ${generatedUser.npub} for ${nip05}`)
 
     // Note: NIP-05 data is stored in the Key table (keyName = username@domain)
     // No separate file write needed - keyName serves as the NIP-05 identifier
-
-    // Create wallet
-    if (domainConfig.wallet) {
-      generateWallet(domainConfig.wallet, username, domain, generatedUser.npub)
-        .then((lnaddress) => {
-          debug(`wallet for ${nip05}`, { lnaddress })
-          if (lnaddress) profile.lud16 = lnaddress
-        })
-        .catch((e) => {
-          debug(`error generating wallet for ${nip05}`, e)
-        })
-        .finally(() => {
-          debug(`saving profile for ${nip05}`, profile)
-          setupSkeletonProfile(key, profile, email, currentConfig.nostr.relays).catch((e) => {
-            debug('error setting up skeleton profile (wallet flow)', e)
-          })
-        })
-    } else {
-      debug(`no wallet configuration for ${domain}`)
-      // Create user profile
-      setupSkeletonProfile(key, profile, email, currentConfig.nostr.relays).catch((e) => {
-        debug('error setting up skeleton profile (no wallet)', e)
-      })
-    }
 
     const keyName = nip05
     const privateKeyHex = key.privateKey!
@@ -239,11 +207,15 @@ export async function createAccountReal(
 
     await admin.loadNsec!(keyName, nsec)
 
-    // Immediately grant access to the creator key and client
-    // This means that the client creating this account can immediately
-    // access it without having to go through an approval flow
+    // Publish Kind 415 username registration event (idempotent)
+    // Throws on failure — pg-boss will retry the full create_account job
+    await publishUsernameEvent(key, username, generatedUser.pubkey, currentConfig.nostr.relays)
+    debug(`[${req.id}] Kind 415 published for ${username}`)
+
+    // Grant access to the creator key and client
     await grantPermissions(req, keyName, clientPubkey)
 
+    // All side effects complete: key stored, Kind 415 published, permissions granted
     checkpointService.broadcast('signer.command.completed', {
       method: 'create_account',
       keyName,

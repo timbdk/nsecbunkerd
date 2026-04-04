@@ -38,7 +38,10 @@ async function createNDK(): Promise<NDK> {
 
   const ndk = new NDK({
     explicitRelayUrls: relays,
-    enableOutboxModel: false
+    enableOutboxModel: false,
+    autoDeviceDiscovery: false,
+    autoFetchUserMutelist: false,
+    cacheAdapter: undefined
   })
   if (debug) {
     ndk.pool.on('relay:disconnect', () => console.log('❌ disconnected'))

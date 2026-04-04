@@ -17,12 +17,11 @@ import authorizeClient from './commands/authorize_client'
 import ping from './commands/ping.js'
 import createNewKey from './commands/create_new_key'
 import revokeClient from './commands/revoke_client'
+import renameAccount from './commands/rename_account'
 import fs from 'fs'
 import { validateRequestFromAdmin } from './validations/request-from-admin'
-import { dmUser } from '../../utils/dm-user'
 import { IConfig, getCurrentConfig } from '../../config'
 import path from 'path'
-
 import { log } from '../../lib/logger.js'
 import { checkpointService } from '../../services/CheckpointService.js'
 
@@ -35,7 +34,6 @@ export type IAdminOpts = {
   registrarNpub?: string
   adminRelays: string[]
   key: string
-  notifyAdminsOnBoot?: boolean
 }
 
 // TODO: Move to configuration
@@ -91,12 +89,6 @@ class AdminInterface {
       this.signerUser = user
 
       this.connect()
-
-      this.config().then((config) => {
-        if (config.admin?.notifyAdminsOnBoot) {
-          this.notifyAdminsOfNewConnection(connectionString)
-        }
-      })
     })
 
     this.rpc = new NDKNostrRpc(this.ndk, this.ndk.signer!, log.admin)
@@ -107,16 +99,7 @@ class AdminInterface {
     return getCurrentConfig(this.configFile)
   }
 
-  private async notifyAdminsOfNewConnection(connectionString: string) {
-    // Use the already-configured adminRelays instead of hardcoded external relays
-    if (!this.npubs || this.npubs.length === 0) {
-      return
-    }
 
-    for (const npub of this.npubs) {
-      dmUser(this.ndk, npub, `nsecBunker has started; use ${connectionString} to connect to it and unlock your key(s)`)
-    }
-  }
 
   /**
    * Get the npub of the admin interface.
@@ -193,6 +176,21 @@ class AdminInterface {
         case 'create_new_key':
           await createNewKey(this, req)
           break
+        case 'rename_account': {
+          const currentConfig = await this.config()
+          const result = await renameAccount(currentConfig, req.params, req.pubkey, req.id)
+
+          checkpointService.broadcast('signer.command.completed', {
+            method: 'rename_account',
+            id: req.id?.substring(0, 16),
+          })
+
+          checkpointService.broadcast('signer.response.sent', {
+            method: 'rename_account',
+          })
+
+          return this.rpc.sendResponse(req.id, req.pubkey, result, NDKKind.NostrConnectAdmin)
+        }
 
         default:
           const originalKind = req.event.kind!
@@ -211,7 +209,7 @@ class AdminInterface {
     if (registrarNpub) {
       const registrarPubkey = new NDKUser({ npub: registrarNpub }).pubkey
       if (req.pubkey === registrarPubkey) {
-        const allowedMethods = ['create_account', 'authorize_user', 'authorize_client', 'revoke_user', 'revoke_client']
+        const allowedMethods = ['create_account', 'rename_account', 'authorize_user', 'authorize_client', 'revoke_user', 'revoke_client']
         if (allowedMethods.includes(req.method)) {
           console.log(`✅ Allowing ${req.method} from Restricted Registrar: ${registrarNpub}`)
           return

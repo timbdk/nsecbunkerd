@@ -3,7 +3,6 @@ import AdminInterface from '../index.js'
 import { saveEncrypted } from '../../../commands/add.js'
 import { nip19 } from 'nostr-tools'
 import { hexToBytes } from '@noble/hashes/utils'
-import { setupSkeletonProfile } from '../../lib/profile.js'
 
 import { getCurrentConfig } from '../../../config/index.js'
 
@@ -19,11 +18,6 @@ export default async function createNewKey(admin: AdminInterface, req: NDKRpcReq
     key = new NDKPrivateKeySigner(nip19.decode(_nsec).data as Uint8Array)
   } else {
     key = NDKPrivateKeySigner.generate()
-
-    const currentConfig = await getCurrentConfig(admin.configFile)
-    setupSkeletonProfile(key, undefined, undefined, currentConfig.nostr.relays)
-
-    console.log(`setting up skeleton profile for ${keyName}`)
   }
 
   const user = await key.user()

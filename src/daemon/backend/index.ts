@@ -1,19 +1,21 @@
 import NDK, { NDKNip46Backend, NDKPrivateKeySigner, Nip46PermitCallback } from '@nostr-dev-kit/ndk'
 import prisma from '../../db.js'
 import type { FastifyInstance } from 'fastify'
+import { RenameAccountHandlingStrategy } from './strategies/rename-account.js'
+import { IConfig } from '../../config/index.js'
 
 export class Backend extends NDKNip46Backend {
   public baseUrl?: string
   public fastify: FastifyInstance
 
-  constructor(ndk: NDK, fastify: FastifyInstance, key: string, cb: Nip46PermitCallback, baseUrl?: string) {
+  constructor(ndk: NDK, fastify: FastifyInstance, key: string, cb: Nip46PermitCallback, config: IConfig) {
     const signer = new NDKPrivateKeySigner(key)
     super(ndk, signer, cb)
 
-    this.baseUrl = baseUrl
+    this.baseUrl = config.baseUrl
     this.fastify = fastify
 
-    // this.setStrategy('publish_event', new PublishEventHandlingStrategy());
+    this.setStrategy('rename_account', new RenameAccountHandlingStrategy(config))
   }
 
   private async validateToken(token: string) {

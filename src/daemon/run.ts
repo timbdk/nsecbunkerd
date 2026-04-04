@@ -180,7 +180,11 @@ class Daemon {
     this.fastify.register(FastifyFormBody)
 
     this.ndk = new NDK({
-      explicitRelayUrls: config.nostr.relays
+      explicitRelayUrls: config.nostr.relays,
+      enableOutboxModel: false,
+      autoDeviceDiscovery: false,
+      autoFetchUserMutelist: false,
+      cacheAdapter: undefined
     })
 
     // Assign a signer to the NDK instance so it can handle NIP-42 AUTH challenges
@@ -250,11 +254,12 @@ class Daemon {
       // Short-circuit registration for testing
       // Test-runner provides the nsec and clientPubkey, signer stores and authorizes them
       this.fastify.post('/testing/register', async (req, res) => {
-        const { keyName, nsec, pubkey, clientPubkey } = req.body as {
+        const { keyName, nsec, pubkey, clientPubkey, createdAt } = req.body as {
           keyName: string
           nsec: string
           pubkey: string
           clientPubkey?: string
+          createdAt?: number
         }
         if (!keyName || !nsec || !pubkey) {
           return res.status(400).send({ error: 'keyName, nsec and pubkey are required' })
@@ -294,6 +299,12 @@ class Daemon {
             console.log(`🧪 Testing: authorized client ${clientPubkey.slice(0, 16)}... for key ${keyName}`)
             checkpointService.broadcast('signer.testing.client_authorized', { keyName, clientPubkey })
           }
+
+          // Publish Kind 415 username registration event (same as production create_account)
+          const { publishUsernameEvent } = await import('./lib/username-event.js')
+          const usernameFromKeyName = keyName.split('@')[0]
+          const testSigner = new NDKPrivateKeySigner(privateKeyHex)
+          await publishUsernameEvent(testSigner, usernameFromKeyName, pubkey, this.config.nostr.relays, createdAt)
 
           // Load into active keys for signing and start the NDK listener
           this.loadNsec(keyName, privateKeyHex)
@@ -607,7 +618,7 @@ class Daemon {
       hexpk = nsec
     }
 
-    const backend = new Backend(this.ndk, this.fastify, hexpk, cb, this.config.baseUrl)
+    const backend = new Backend(this.ndk, this.fastify, hexpk, cb, this.config)
     await backend.start()
   }
 

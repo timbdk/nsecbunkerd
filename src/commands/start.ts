@@ -27,7 +27,13 @@ async function nip89announcement(configData: IConfig) {
     const relays = config.nip89!.relays
     const nip05 = `_@${domain}`
 
-    const ndk = new NDK({ explicitRelayUrls: relays })
+    const ndk = new NDK({
+      explicitRelayUrls: relays,
+      enableOutboxModel: false,
+      autoDeviceDiscovery: false,
+      autoFetchUserMutelist: false,
+      cacheAdapter: undefined
+    })
 
     // make sure the nip05 correctly points to this pubkey
     const uservianip05 = await NDKUser.fromNip05(nip05, ndk)
