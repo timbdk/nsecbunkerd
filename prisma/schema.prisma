@@ -1,122 +1,88 @@
 generator client {
-  provider = "prisma-client-js"
-  binaryTargets = ["native", "debian-openssl-1.1.x", "linux-musl-openssl-3.0.x", "linux-musl-arm64-openssl-3.0.x"]
-  engineType    = "binary"
+  provider      = "prisma-client-js"
+  output        = "../node_modules/.prisma/client"
 }
 
 datasource db {
   provider = "sqlite"
-  url      = env("DATABASE_URL")
 }
 
-model Request {
-    id            String   @id @default(uuid())
-    keyName       String?
-    createdAt     DateTime  @default(now())
-    requestId     String
-    remotePubkey  String
-    method        String
-    params        String?
-    allowed       Boolean?
-}
 
-model KeyUser {
-  id                Int                @id @default(autoincrement())
-  keyName           String
-  userPubkey        String
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @default(now()) @updatedAt
-  revokedAt         DateTime?
-  lastUsedAt        DateTime?
-  description       String?
-  logs              Log[]
-  signingConditions SigningCondition[]
-  Token             Token[]
 
-  @@unique([keyName, userPubkey], name: "unique_key_user")
+enum KeyStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
 }
 
 model Key {
   id           Int       @id @default(autoincrement())
-  keyName      String    @unique
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @default(now()) @updatedAt
-  deletedAt    DateTime?
+  keyName      String    @unique          // e.g. "user@verity.local"
   pubkey       String
-  encryptedKey String?   // AES-256-GCM ciphertext (hex)
-  iv           String?   // Initialization vector (hex)
-  authTag      String?   // GCM authentication tag (hex)
-  backedUpAt   DateTime? // When backup confirmed
+  encryptedKey String                      // AES-256-GCM ciphertext (hex)
+  iv           String                      // Initialization vector (hex)
+  authTag      String                      // GCM authentication tag (hex)
+  backedUpAt   DateTime?                   // When backup confirmed
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  status       KeyStatus @default(ACTIVE)  // Account lifecycle state
+  statusAt     DateTime?                   // When status last changed
+  sessions     Session[]
 }
 
-model User {
-  id        Int      @id @default(autoincrement())
-  username  String   @unique
-  domain    String
-  password  String
-  email     String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @default(now()) @updatedAt
-  deletedAt DateTime?
-  pubkey    String
+model Session {
+  id           Int                @id @default(autoincrement())
+  keyName      String
+  clientPubkey String                              // Authorized device/browser pubkey
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  revokedAt    DateTime?
+  lastUsedAt   DateTime?
+  description  String?
+  key          Key                @relation(fields: [keyName], references: [keyName])
+  conditions   SigningCondition[]
+  policies     Policy[]
+
+  @@unique([keyName, clientPubkey])
 }
 
 model SigningCondition {
-  id             Int      @id @default(autoincrement())
-  method         String?
-  kind           String?
-  content        String?
-  keyUserKeyName String?
-  allowed        Boolean?
-  keyUserId      Int?
-  KeyUser        KeyUser? @relation(fields: [keyUserId], references: [id])
-}
-
-model Log {
   id        Int      @id @default(autoincrement())
-  timestamp DateTime
-  type      String
-  method    String?
-  params    String?
-  keyUserId Int?
-  KeyUser   KeyUser? @relation(fields: [keyUserId], references: [id])
+  method    String?                     // "sign_event", "encrypt", "connect", "*"
+  kind      Int?                        // Event kind filter (null = all kinds)
+  allowed   Boolean?                    // true=allow, false=deny, null=undecided
+  sessionId Int?
+  session   Session? @relation(fields: [sessionId], references: [id])
 }
 
 model Policy {
   id          Int          @id @default(autoincrement())
   name        String
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @default(now()) @updatedAt
-  expiresAt   DateTime?
-  deletedAt   DateTime?
   description String?
+  expiresAt   DateTime?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
   rules       PolicyRule[]
-  Token       Token[]
+  sessions    Session[]                    // M:N — policy applies to sessions
 }
 
 model PolicyRule {
   id                Int     @id @default(autoincrement())
-  method            String
-  kind              String?
-  maxUsageCount     Int?
-  currentUsageCount Int?
+  method            String               // "sign_event", "connect", etc.
+  kind              Int?                 // Event kind filter (null = all kinds)
+  maxUsageCount     Int?                 // NULL = unlimited
+  currentUsageCount Int      @default(0)
   policyId          Int?
-  Policy            Policy? @relation(fields: [policyId], references: [id])
+  policy            Policy?  @relation(fields: [policyId], references: [id])
 }
 
-model Token {
-  id         Int       @id @default(autoincrement())
-  keyName    String
-  token      String    @unique
-  clientName String
-  createdBy  String
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @default(now()) @updatedAt
-  deletedAt  DateTime?
-  expiresAt  DateTime?
-  redeemedAt DateTime?
-  keyUserId  Int?
-  policyId   Int?
-  policy     Policy?   @relation(fields: [policyId], references: [id])
-  KeyUser    KeyUser?  @relation(fields: [keyUserId], references: [id])
+model Audit {
+  id           String   @id @default(uuid())
+  keyName      String?
+  createdAt    DateTime @default(now())
+  correlationId String
+  clientPubkey String
+  method       String
+  params       String?
+  allowed      Boolean?
 }

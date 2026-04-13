@@ -6,9 +6,10 @@
  */
 
 import crypto from 'crypto'
-import { nip19, getPublicKey } from 'nostr-tools'
-import { hexToBytes } from '@noble/hashes/utils'
+import { nip19, getPublicKey, utils } from 'nostr-tools'
+const { hexToBytes } = utils
 import prisma from '../db.js'
+import { logError } from '../lib/logger.js'
 
 const ALGORITHM = 'aes-256-gcm'
 
@@ -163,11 +164,11 @@ export async function validateAllKeys(): Promise<{
       const derivedPubkey = getPublicKey(hexToBytes(decryptedHex))
 
       if (derivedPubkey !== key.pubkey) {
-        console.error(`Key ${key.keyName}: pubkey mismatch. ` + `Expected ${key.pubkey}, got ${derivedPubkey}`)
+        logError('keys', `Key ${key.keyName}: pubkey mismatch. ` + `Expected ${key.pubkey}, got ${derivedPubkey}`)
         failed.push(key.keyName)
       }
     } catch (e: any) {
-      console.error(`Key ${key.keyName}: decryption failed - ${e.message}`)
+      logError('keys', `Key ${key.keyName}: decryption failed - ${e.message}`, e)
       failed.push(key.keyName)
     }
   }

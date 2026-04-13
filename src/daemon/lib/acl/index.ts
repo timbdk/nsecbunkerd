@@ -1,18 +1,19 @@
 import { NDKEvent, NostrEvent } from '@nostr-dev-kit/ndk'
 import prisma from '../../../db.js'
+import { log } from '../../../lib/logger.js'
 
 export async function checkIfPubkeyAllowed(
   keyName: string,
-  remotePubkey: string,
+  clientPubkey: string,
   method: IMethod,
   payload?: string | NostrEvent
 ): Promise<boolean | undefined> {
-  // find KeyUser by specific pubkey
-  let keyUser = await prisma.keyUser.findUnique({
-    where: { unique_key_user: { keyName, userPubkey: remotePubkey } }
+  // find Session by specific pubkey
+  let session = await prisma.session.findUnique({
+    where: { keyName_clientPubkey: { keyName, clientPubkey } }
   })
 
-  if (!keyUser) {
+  if (!session) {
     return undefined
   }
 
@@ -21,20 +22,20 @@ export async function checkIfPubkeyAllowed(
 
   const explicitReject = await prisma.signingCondition.findFirst({
     where: {
-      keyUserId: keyUser.id,
+      sessionId: session.id,
       method: '*',
       allowed: false
     }
   })
 
   if (explicitReject) {
-    console.log(`explicit reject`, explicitReject)
+    log.acl(`explicit reject`, explicitReject)
     return false
   }
 
   const signingCondition = await prisma.signingCondition.findFirst({
     where: {
-      keyUserId: keyUser.id,
+      sessionId: session.id,
       ...signingConditionQuery
     }
   })
@@ -46,11 +47,11 @@ export async function checkIfPubkeyAllowed(
 
   const allowed = signingCondition.allowed
 
-  // Check if the key user has been revoked
+  // Check if the session has been revoked
   if (allowed) {
-    const revoked = await prisma.keyUser.findFirst({
+    const revoked = await prisma.session.findFirst({
       where: {
-        id: keyUser.id,
+        id: session.id,
         revokedAt: { not: null }
       }
     })
@@ -61,7 +62,7 @@ export async function checkIfPubkeyAllowed(
   }
 
   if (allowed === true || allowed === false) {
-    console.log(`found signing condition`, signingCondition)
+    log.acl(`found signing condition`, signingCondition)
     return allowed
   }
 
@@ -71,16 +72,37 @@ export async function checkIfPubkeyAllowed(
 export type IMethod = 'connect' | 'sign_event' | 'encrypt' | 'decrypt' | 'ping' | 'switch_relays' | 'get_public_key'
 
 export type IAllowScope = {
-  kind?: number | 'all'
+  kind?: number | null
 }
 
-export function requestToSigningConditionQuery(method: IMethod, payload?: string | NostrEvent) {
+export function requestToSigningConditionQuery(method: IMethod, payload?: any) {
   const signingConditionQuery: any = { method }
 
-  switch (method) {
-    case 'sign_event':
-      signingConditionQuery.kind = { in: [payload?.kind?.toString(), 'all'] }
-      break
+  if (method === 'sign_event' && payload) {
+    try {
+      let kind: number | undefined
+      
+      // NIP-46 sign_event params is [eventJson]
+      if (Array.isArray(payload) && typeof payload[0] === 'string') {
+        const event = JSON.parse(payload[0])
+        kind = event.kind
+      } else if (typeof payload === 'object' && payload.kind !== undefined) {
+        kind = payload.kind
+      }
+
+      if (kind !== undefined) {
+        // Match specific kind OR null (wildcard)
+        signingConditionQuery.OR = [
+          { kind },
+          { kind: null }
+        ]
+        // Remove the top-level method if we use OR at top level, 
+        // but we want to keep method constraint.
+        // Prisma: { method: 'sign_event', OR: [...] } works as AND(method, OR(...))
+      }
+    } catch (e) {
+      log.acl('Error parsing event kind from payload', e)
+    }
   }
 
   return signingConditionQuery
@@ -89,15 +111,15 @@ export function requestToSigningConditionQuery(method: IMethod, payload?: string
 export function allowScopeToSigningConditionQuery(method: string, scope?: IAllowScope) {
   const signingConditionQuery: any = { method }
 
-  if (scope && scope.kind) {
-    signingConditionQuery.kind = scope.kind.toString()
+  if (scope && scope.kind !== undefined) {
+    signingConditionQuery.kind = scope.kind
   }
 
   return signingConditionQuery
 }
 
 export async function allowAllRequestsFromKey(
-  remotePubkey: string,
+  clientPubkey: string,
   keyName: string,
   method: string,
   param?: any,
@@ -105,53 +127,53 @@ export async function allowAllRequestsFromKey(
   allowScope?: IAllowScope
 ): Promise<void> {
   try {
-    // Upsert the KeyUser with the given remotePubkey
-    const upsertedUser = await prisma.keyUser.upsert({
-      where: { unique_key_user: { keyName, userPubkey: remotePubkey } },
+    // Upsert the Session with the given clientPubkey
+    const upsertedSession = await prisma.session.upsert({
+      where: { keyName_clientPubkey: { keyName, clientPubkey } },
       update: {},
-      create: { keyName, userPubkey: remotePubkey, description }
+      create: { keyName, clientPubkey, description }
     })
 
-    // Create a new SigningCondition for the given KeyUser and set allowed to true
+    // Create a new SigningCondition for the given Session and set allowed to true
     const signingConditionQuery = allowScopeToSigningConditionQuery(method, allowScope)
     await prisma.signingCondition.create({
       data: {
         allowed: true,
-        keyUserId: upsertedUser.id,
-        ...signingConditionQuery,
-        ...allowScope
+        sessionId: upsertedSession.id,
+        ...signingConditionQuery
       }
     })
 
     // Resolve any pending authorization requests for this key/pubkey/method
-    await prisma.request.updateMany({
+    await prisma.audit.updateMany({
       where: {
         keyName,
-        remotePubkey,
-        method
+        clientPubkey,
+        method,
+        allowed: null
       },
       data: {
         allowed: true
       }
     })
   } catch (e) {
-    console.log('allowAllRequestsFromKey', e)
+    log.acl('allowAllRequestsFromKey', e)
   }
 }
 
-export async function rejectAllRequestsFromKey(remotePubkey: string, keyName: string): Promise<void> {
-  // Upsert the KeyUser with the given remotePubkey
-  const upsertedUser = await prisma.keyUser.upsert({
-    where: { unique_key_user: { keyName, userPubkey: remotePubkey } },
+export async function rejectAllRequestsFromKey(clientPubkey: string, keyName: string): Promise<void> {
+  // Upsert the Session with the given clientPubkey
+  const upsertedSession = await prisma.session.upsert({
+    where: { keyName_clientPubkey: { keyName, clientPubkey } },
     update: {},
-    create: { keyName, userPubkey: remotePubkey }
+    create: { keyName, clientPubkey }
   })
 
-  // Create a new SigningCondition for the given KeyUser and set allowed to false
+  // Create a new SigningCondition for the given Session and set allowed to false
   await prisma.signingCondition.create({
     data: {
       allowed: false,
-      keyUserId: upsertedUser.id
+      sessionId: upsertedSession.id
     }
   })
 }

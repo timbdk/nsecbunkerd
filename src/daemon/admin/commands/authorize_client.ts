@@ -2,12 +2,9 @@ import { NDKKind, NDKRpcRequest } from '@nostr-dev-kit/ndk'
 import AdminInterface from '../index.js'
 import { allowAllRequestsFromKey } from '../../lib/acl/index.js'
 import prisma from '../../../db.js'
-import createDebug from 'debug'
 import { checkpointService } from '../../../services/CheckpointService.js'
 
 import { log } from '../../../lib/logger.js'
-
-// const debug = createDebug("nsecbunker:authorizeClient") // Replaced by log.admin
 
 /**
  * Authorizes a client pubkey to perform signing operations with a user's key.
@@ -72,7 +69,7 @@ export default async function authorizeClient(admin: AdminInterface, req: NDKRpc
     // Grant permissions to the CLIENT pubkey (not the user pubkey!)
     await allowAllRequestsFromKey(clientPubkey, keyName, 'connect', undefined, 'client authorization')
     await allowAllRequestsFromKey(clientPubkey, keyName, 'sign_event', undefined, 'client authorization', {
-      kind: 'all'
+      kind: null
     })
     await allowAllRequestsFromKey(clientPubkey, keyName, 'encrypt', undefined, 'client authorization')
     await allowAllRequestsFromKey(clientPubkey, keyName, 'decrypt', undefined, 'client authorization')

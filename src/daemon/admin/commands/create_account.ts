@@ -1,32 +1,23 @@
-import { Hexpubkey, NDKKind, NDKPrivateKeySigner, NDKRpcRequest, NDKUser } from '@nostr-dev-kit/ndk'
+import { NDKKind, NDKPrivateKeySigner, NDKRpcRequest, NDKUser } from '@nostr-dev-kit/ndk'
 import AdminInterface from '..'
-import { hexToBytes } from '@noble/hashes/utils'
-import { IConfig, getCurrentConfig } from '../../../config'
-import { allowAllRequestsFromKey } from '../../lib/acl'
-import { requestAuthorization } from '../../authorize'
-import { publishUsernameEvent } from '../../lib/username-event'
-import prisma from '../../../db'
-import createDebug from 'debug'
+import { allowAllRequestsFromKey } from '../../lib/acl/index.js'
+import { publishUsernameEvent } from '../../lib/username-event.js'
+import prisma from '../../../db.js'
+import { log } from '../../../lib/logger.js'
 import { encryptPrivateKey, storeKey, hexToNsec, markKeyBackedUp } from '../../../services/KeyService.js'
 import { backupKey } from '../../../services/BackupService.js'
 import { checkpointService } from '../../../services/CheckpointService.js'
 
-const debug = createDebug('nsecbunker:createAccount')
 
-export async function validate(currentConfig, username: string, domain: string, email?: string) {
+export async function validate(username: string, domain: string) {
   if (!username) {
     throw new Error('username is required')
-  }
-
-  // make sure we have the domain
-  if (!currentConfig.domains[domain]) {
-    throw new Error('domain not found')
   }
 
   // Check if username already exists in database
   const keyName = `${username}@${domain}`
   const existingKey = await prisma.key.findFirst({
-    where: { keyName, deletedAt: null }
+    where: { keyName, status: 'ACTIVE' }
   })
 
   if (existingKey) {
@@ -34,20 +25,13 @@ export async function validate(currentConfig, username: string, domain: string, 
   }
 }
 
-/**
- * Reserved usernames that cannot be used since someone might
- * confuse them with some type of authority of this domain
- * and scammers are scoundrels
- */
 const RESERVED_USERNAMES = ['admin', 'root', '_', 'administrator', '__']
 
-async function validateUsername(username: string | undefined, domain: string, admin: AdminInterface, req: NDKRpcRequest) {
+async function validateUsername(username: string | undefined) {
   if (!username || username.length === 0) {
-    // create a random username of 10 characters
     username = Math.random().toString(36).substring(2, 15)
   }
 
-  // check if the username is available
   if (RESERVED_USERNAMES.includes(username)) {
     throw new Error('username not available')
   }
@@ -55,75 +39,27 @@ async function validateUsername(username: string | undefined, domain: string, ad
   return username
 }
 
-async function validateDomain(domain: string | undefined, admin: AdminInterface, req: NDKRpcRequest) {
-  const availableDomains = (await admin.config()).domains
-
-  if (!availableDomains || Object.keys(availableDomains).length === 0) throw new Error('no domains available')
-
-  if (!domain || domain.length === 0) domain = Object.keys(availableDomains)[0]
-
-  // check if the domain is available
-  if (!availableDomains[domain]) {
-    throw new Error('domain not available')
-  }
-
-  return domain
-}
-
 export default async function createAccount(admin: AdminInterface, req: NDKRpcRequest) {
   // params: [username, domain, email?, clientPubkey?, correlationId?]
   let [username, domain, email, clientPubkey, correlationId] = req.params as [string?, string?, string?, string?, string?]
+  const fallbackDomain = 'verity.local' // Or get from config but we don't validate against hardcoded config.domains anymore
 
-  // Log with correlationId for tracing
-  debug(`[${correlationId?.slice(0, 8) || 'no-corr'}] create_account request from ${req.pubkey.slice(0, 16)}...`)
+  if (!domain || domain.length === 0) domain = fallbackDomain
+
+  log.admin(`[${correlationId?.slice(0, 8) || 'no-corr'}] create_account request from ${req.pubkey.slice(0, 16)}...`)
 
   try {
-    domain = await validateDomain(domain, admin, req)
-    username = await validateUsername(username, domain, admin, req)
+    username = await validateUsername(username)
   } catch (e: any) {
     const originalKind = req.event.kind!
-    debug(`[${correlationId?.slice(0, 8) || 'no-corr'}] create_account validation failed: ${e.message}`)
+    log.admin(`[${correlationId?.slice(0, 8) || 'no-corr'}] create_account validation failed: ${e.message}`)
     admin.rpc.sendResponse(req.id, req.pubkey, 'error', originalKind, e.message)
     return
   }
 
-  const nip05 = `${username}@${domain}`
-  const payload: string[] = [username, domain]
-  if (email) payload.push(email)
-  if (clientPubkey) payload.push(clientPubkey)
-
-  // Check if request is from Registrar and bypass authorization
-  const registrarNpub = (admin as any).opts?.registrarNpub
-  let isRegistrar = false
-  if (registrarNpub) {
-    const registrarPubkey = new NDKUser({ npub: registrarNpub }).pubkey
-    if (req.pubkey === registrarPubkey) {
-      isRegistrar = true
-    }
-  }
-
-  if (isRegistrar) {
-    debug(`[${correlationId?.slice(0, 8) || 'no-corr'}] Bypassing authorization for Registrar`)
-    return createAccountReal(admin, req, username, domain, email, clientPubkey)
-  }
-
-  debug(`Requesting authorization for ${nip05}`)
-  const authorizationWithPayload = await requestAuthorization(admin, nip05, req.pubkey, req.id, req.method, JSON.stringify(payload))
-  debug(`Authorization for ${nip05} ${authorizationWithPayload ? 'granted' : 'denied'}`)
-
-  if (authorizationWithPayload) {
-    const payload = JSON.parse(authorizationWithPayload)
-    username = payload[0]
-    domain = payload[1]
-    email = payload[2]
-    clientPubkey = payload[3]
-    return createAccountReal(admin, req, username, domain, email, clientPubkey)
-  }
+  return createAccountReal(admin, req, username, domain, email, clientPubkey)
 }
 
-/**
- * This is where the real work of creating the private key, wallet, nip-05, granting access, etc happen
- */
 export async function createAccountReal(
   admin: AdminInterface,
   req: NDKRpcRequest,
@@ -143,34 +79,23 @@ export async function createAccountReal(
   })
 
   try {
-    debug(`[${req.id}] create_account request from ${clientPubkey?.slice(0, 16) || 'unknown'}...`)
-    debug(`[${req.id}] Creating account for ${username}@${domain}`)
-
-    const currentConfig = await getCurrentConfig(admin.configFile)
-
-    if (!currentConfig.domains) {
-      throw new Error('no domains configured')
-    }
-
-    const domainConfig = currentConfig.domains[domain]
-
-    // await validate(currentConfig, username, domain, email);
+    log.admin(`[${req.id}] create_account request from ${clientPubkey?.slice(0, 16) || 'unknown'}...`)
+    log.admin(`[${req.id}] Creating account for ${username}@${domain}`)
 
     try {
-      await validate(currentConfig, username, domain, email)
+      await validate(username, domain)
     } catch (e: any) {
       if (e.message === 'username already exists') {
-        debug('username already exists, implementing idempotency')
+        log.admin('username already exists, implementing idempotency')
         const keyName = `${username}@${domain}`
         const existingKey = await prisma.key.findFirst({
-          where: { keyName, deletedAt: null },
+          where: { keyName, status: 'ACTIVE' },
           select: { pubkey: true }
         })
         if (existingKey) {
-          debug(`Found existing pubkey ${existingKey.pubkey} for ${username}`)
-          // Ensure permissions are granted (idempotent)
+          log.admin(`Found existing pubkey ${existingKey.pubkey} for ${username}`)
           await grantPermissions(req, keyName, clientPubkey)
-          debug('permissions re-granted for existing user')
+          log.admin('permissions re-granted for existing user')
           return admin.rpc.sendResponse(req.id, req.pubkey, existingKey.pubkey, NDKKind.NostrConnectAdmin)
         }
       }
@@ -181,41 +106,33 @@ export async function createAccountReal(
     const key = NDKPrivateKeySigner.generate()
     const generatedUser = await key.user()
 
-    debug(`Created user ${generatedUser.npub} for ${nip05}`)
-
-    // Note: NIP-05 data is stored in the Key table (keyName = username@domain)
-    // No separate file write needed - keyName serves as the NIP-05 identifier
+    log.admin(`Created user ${generatedUser.npub} for ${nip05}`)
 
     const keyName = nip05
     const privateKeyHex = key.privateKey!
     const nsec = hexToNsec(privateKeyHex)
 
-    // Backup-first: encrypt and backup before local storage
-    debug(`Encrypting key for ${keyName}`)
+    log.admin(`Encrypting key for ${keyName}`)
     const encryptedData = encryptPrivateKey(privateKeyHex, keyName)
 
-    debug(`Backing up key for ${keyName}`)
+    log.admin(`Backing up key for ${keyName}`)
     const backupResult = await backupKey(keyName, encryptedData, generatedUser.pubkey)
     if (!backupResult.success) {
       throw new Error(`Backup failed for ${keyName}: ${backupResult.error}`)
     }
 
-    // Only store locally after successful backup
-    debug(`Storing key locally for ${keyName}`)
+    log.admin(`Storing key locally for ${keyName}`)
     await storeKey(keyName, privateKeyHex, generatedUser.pubkey)
     await markKeyBackedUp(keyName)
 
     await admin.loadNsec!(keyName, nsec)
 
-    // Publish Kind 415 username registration event (idempotent)
-    // Throws on failure — pg-boss will retry the full create_account job
+    const currentConfig = await admin.config()
     await publishUsernameEvent(key, username, generatedUser.pubkey, currentConfig.nostr.relays)
-    debug(`[${req.id}] Kind 415 published for ${username}`)
+    log.admin(`[${req.id}] Kind 415 published for ${username}`)
 
-    // Grant access to the creator key and client
     await grantPermissions(req, keyName, clientPubkey)
 
-    // All side effects complete: key stored, Kind 415 published, permissions granted
     checkpointService.broadcast('signer.command.completed', {
       method: 'create_account',
       keyName,
@@ -225,7 +142,7 @@ export async function createAccountReal(
     scope.logResponse({
       userPubkey: generatedUser.pubkey,
       userIdentifier: keyName,
-      responseEventId: undefined, // Will be set by rpc layer
+      responseEventId: undefined,
       clientPubkey: clientPubkey || req.pubkey
     })
 
@@ -235,35 +152,24 @@ export async function createAccountReal(
 
     return admin.rpc.sendResponse(req.id, req.pubkey, generatedUser.pubkey, NDKKind.NostrConnectAdmin)
   } catch (e: any) {
-    debug(`error creating account: ${e.message}`)
+    log.admin(`error creating account: ${e.message}`)
     scope.logError(e, { username, domain })
     return admin.rpc.sendResponse(req.id, req.pubkey, 'error', NDKKind.NostrConnectAdmin, e.message)
   }
 }
 
 async function grantPermissions(req: NDKRpcRequest, keyName: string, clientPubkey?: string) {
-  // Grant permissions to the registrar that initiated the request
   await allowAllRequestsFromKey(req.pubkey, keyName, 'connect', undefined, 'registrar')
-  await allowAllRequestsFromKey(req.pubkey, keyName, 'sign_event', undefined, 'registrar', {
-    kind: 'all'
-  })
+  await allowAllRequestsFromKey(req.pubkey, keyName, 'sign_event', undefined, 'registrar', { kind: null })
   await allowAllRequestsFromKey(req.pubkey, keyName, 'encrypt', undefined, 'registrar')
   await allowAllRequestsFromKey(req.pubkey, keyName, 'decrypt', undefined, 'registrar')
-  // NDK calls these utility methods during blockUntilReady() after the initial 'connect' handshake.
-  // The requests are sent from the client's ephemeral keypair, so authorize_client.ts is the primary
-  // gate. We grant defensively here too: the ACL resolves by (keyName, remotePubkey) and we can't be
-  // certain the NIP-46 backend won't look up the registrar/user pubkey for these methods.
   await allowAllRequestsFromKey(req.pubkey, keyName, 'switch_relays', undefined, 'registrar')
   await allowAllRequestsFromKey(req.pubkey, keyName, 'get_public_key', undefined, 'registrar')
   await allowAllRequestsFromKey(req.pubkey, keyName, 'ping', undefined, 'registrar')
 
-  // Grant permissions to the client's ephemeral keypair
-  // This allows the web browser that initiated registration to immediately connect
   if (clientPubkey) {
     await allowAllRequestsFromKey(clientPubkey, keyName, 'connect', undefined, 'client')
-    await allowAllRequestsFromKey(clientPubkey, keyName, 'sign_event', undefined, 'client', {
-      kind: 'all'
-    })
+    await allowAllRequestsFromKey(clientPubkey, keyName, 'sign_event', undefined, 'client', { kind: null })
     await allowAllRequestsFromKey(clientPubkey, keyName, 'encrypt', undefined, 'client')
     await allowAllRequestsFromKey(clientPubkey, keyName, 'decrypt', undefined, 'client')
     await allowAllRequestsFromKey(clientPubkey, keyName, 'switch_relays', undefined, 'client')

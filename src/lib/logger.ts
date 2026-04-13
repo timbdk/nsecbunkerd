@@ -35,6 +35,9 @@ export const log = {
   // HTTP endpoints
   http: createDebug('signer:http'),
 
+  // General audit logs
+  audit: createDebug('signer:audit'),
+
   // Signing operations (audit trail)
   signing: createDebug('signer:signing')
 }

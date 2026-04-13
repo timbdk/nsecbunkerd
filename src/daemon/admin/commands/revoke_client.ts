@@ -2,10 +2,9 @@ import { NDKKind, NDKRpcRequest } from '@nostr-dev-kit/ndk'
 import AdminInterface from '../index.js'
 import { rejectAllRequestsFromKey } from '../../lib/acl/index.js'
 import prisma from '../../../db.js'
-import createDebug from 'debug'
+import { log } from '../../../lib/logger.js'
 import { checkpointService } from '../../../services/CheckpointService.js'
 
-const debug = createDebug('nsecbunker:revokeClient')
 
 /**
  * Revokes a client's permission to sign events with a user's key.
@@ -22,16 +21,16 @@ export default async function revokeClient(admin: AdminInterface, req: NDKRpcReq
   const corrPrefix = `[${correlationId?.slice(0, 8) || 'no-corr'}]`
 
   if (!keyName) {
-    debug(`${corrPrefix} Invalid params: keyName required`)
+    log.admin(`${corrPrefix} Invalid params: keyName required`)
     return admin.rpc.sendResponse(req.id, req.pubkey, 'error', NDKKind.NostrConnect, 'Invalid params: keyName required')
   }
 
-  debug(`${corrPrefix} Revoking ${clientPubkey ? 'client ' + clientPubkey.slice(0, 16) + '...' : 'ALL clients'} from key ${keyName}`)
+  log.admin(`${corrPrefix} Revoking ${clientPubkey ? 'client ' + clientPubkey.slice(0, 16) + '...' : 'ALL clients'} from key ${keyName}`)
 
   // Verify the key exists
   const key = await prisma.key.findUnique({ where: { keyName } })
   if (!key) {
-    debug(`Key not found: ${keyName}`)
+    log.admin(`Key not found: ${keyName}`)
     return admin.rpc.sendResponse(req.id, req.pubkey, 'error', NDKKind.NostrConnect, `Key not found: ${keyName}`)
   }
 
@@ -39,14 +38,21 @@ export default async function revokeClient(admin: AdminInterface, req: NDKRpcReq
     if (clientPubkey) {
       // Revoke specific client
       await rejectAllRequestsFromKey(clientPubkey, keyName)
-      debug(`Client ${clientPubkey.slice(0, 16)}... revoked from key ${keyName}`)
+      
+      // Also mark session explicitly revoked
+      await prisma.session.updateMany({
+        where: { keyName, clientPubkey, revokedAt: null },
+        data: { revokedAt: new Date() }
+      })
+
+      log.admin(`Client ${clientPubkey.slice(0, 16)}... revoked from key ${keyName}`)
     } else {
-      // Revoke all clients by revoking the userPubkey
-      // Note: This is a broad revocation that may need refinement
-      if (userPubkey) {
-        await rejectAllRequestsFromKey(userPubkey, keyName)
-        debug(`All clients revoked for user ${userPubkey.slice(0, 16)}... on key ${keyName}`)
-      }
+      // Revoke all clients 
+      await prisma.session.updateMany({
+        where: { keyName, revokedAt: null },
+        data: { revokedAt: new Date() }
+      })
+      log.admin(`All clients revoked for user ${userPubkey?.slice(0, 16)}... on key ${keyName}`)
     }
 
     checkpointService.broadcast('signer.command.completed', {
@@ -61,7 +67,7 @@ export default async function revokeClient(admin: AdminInterface, req: NDKRpcReq
 
     return admin.rpc.sendResponse(req.id, req.pubkey, 'revoked', NDKKind.NostrConnect)
   } catch (e: any) {
-    debug(`Error revoking client: ${e.message}`)
+    log.admin(`Error revoking client: ${e.message}`)
     return admin.rpc.sendResponse(req.id, req.pubkey, 'error', NDKKind.NostrConnect, e.message)
   }
 }

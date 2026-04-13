@@ -1,5 +1,6 @@
-import { execSync } from 'child_process'
 import * as fs from 'fs'
+import { Daemon } from '../dist/daemon/index.js'
+import { NDKPrivateKeySigner } from '@nostr-dev-kit/ndk'
 
 // Inject serialization prefix from environment (FATAL if missing)
 if (!process.env.VERITY_SERIALIZATION_PREFIX) {
@@ -8,20 +9,11 @@ if (!process.env.VERITY_SERIALIZATION_PREFIX) {
 }
 ;(globalThis as any).VERITY_SERIALIZATION_PREFIX = Number(process.env.VERITY_SERIALIZATION_PREFIX)
 
-interface NsecbunkerConfig {
-  nostr?: {
-    relays?: string[]
-  }
-  admin?: {
-    adminRelays?: string[]
-  }
-}
-
 try {
   // Ensure config folder exists at the absolute path used by DATABASE_URL
   const configPath = '/app/config'
   if (!fs.existsSync(configPath)) {
-    execSync(`mkdir -p ${configPath}`)
+    fs.mkdirSync(configPath, { recursive: true })
   }
 
   // Database paths
@@ -33,50 +25,64 @@ try {
     // Fast path: Use pre-baked template (testing with tmpfs)
     fs.copyFileSync(templatePath, dbPath)
   }
-} catch (error: unknown) {
-  // Log fatal error to stderr
-  const err = error as { message?: string; stderr?: Buffer; stdout?: Buffer }
-  console.error(`[MIGRATION] Error: ${err.message || error}`)
+} catch (error: any) {
+  console.error(`[MIGRATION] Error: ${error.message || error}`)
   process.exit(1)
 }
 
-const args = process.argv.slice(2)
-const configArgIndex = args.indexOf('--config')
-let runtimeConfigArg: string | null = configArgIndex !== -1 ? args[configArgIndex + 1] : null
-
-// nsecbunker modifies its config file at runtime, so we need to copy it to
-// a writable location (tmpfs in testing) and optionally apply RELAYS override
-if (runtimeConfigArg && fs.existsSync(runtimeConfigArg)) {
-  try {
-    const configContent = fs.readFileSync(runtimeConfigArg, 'utf-8')
-    const config: NsecbunkerConfig = JSON.parse(configContent)
-
-    // Apply RELAYS env override if set
-    const relays = process.env.RELAYS
-    if (relays) {
-      const relayList = relays.split(',').map((r) => r.trim())
-      config.nostr = config.nostr || {}
-      config.nostr.relays = relayList
-      config.admin = config.admin || {}
-      config.admin.adminRelays = relayList
-    }
-
-    // Write to runtime location (tmpfs in testing, ./config in dev)
-    const runtimeConfigPath = '/app/config/nsecbunker-runtime.json'
-    fs.writeFileSync(runtimeConfigPath, JSON.stringify(config, null, 2))
-
-    // Update args to use runtime config
-    args[configArgIndex + 1] = runtimeConfigPath
-  } catch (e: unknown) {
-    const err = e as { message?: string }
-    console.error(`Failed to prepare runtime config: ${err.message}`)
-    // Continue with original config path (will fail if read-only)
-  }
+let configFile = '/app/config/nsecbunker.json'
+const configFlagIndex = process.argv.indexOf('--config')
+if (configFlagIndex > -1 && process.argv.length > configFlagIndex + 1) {
+    configFile = process.argv[configFlagIndex + 1]
 }
-// Link process.argv[1] to the actual dist file (relative to CWD /app)
-// This is used by yargs to determine the script name
-process.argv = [process.execPath, './dist/index.js', ...args]
 
-// Load the application directly in-process.
-// ESM import relative to THIS file (/app/scripts/start.ts)
-await import('../dist/index.js')
+let adminKey = process.env.ADMIN_KEY
+let adminNpubs = process.env.ADMIN_NPUBS ? process.env.ADMIN_NPUBS.split(',').map(r => r.trim()).filter(Boolean) : []
+
+if (fs.existsSync(configFile)) {
+    try {
+        const fileConfig = JSON.parse(fs.readFileSync(configFile, 'utf8'))
+        if (fileConfig?.admin?.key && !adminKey) adminKey = fileConfig.admin.key
+        if (fileConfig?.admin?.npubs && adminNpubs.length === 0) adminNpubs = fileConfig.admin.npubs
+    } catch (err) {
+        console.warn(`WARNING: Failed to parse config file ${configFile}`)
+    }
+}
+
+if (!adminKey) {
+    console.log("Generating new ephemeral admin key for session...")
+    adminKey = NDKPrivateKeySigner.generate().privateKey
+}
+
+if (adminKey && adminKey.length !== 64 && !adminKey.startsWith('nsec')) {
+    adminKey = adminKey.trim()
+}
+
+const relays = (process.env.RELAYS || '').split(',').map((r) => r.trim()).filter(Boolean)
+if (relays.length === 0) {
+    console.warn("WARNING: RELAYS env var is empty or missing")
+}
+
+const config = {
+  nostr: {
+    relays
+  },
+  admin: {
+    adminRelays: relays,
+    npubs: adminNpubs,
+    key: adminKey
+  },
+  database: process.env.DATABASE_URL || `file:/app/config/nsecbunker.db`,
+  logs: process.env.AUDIT_LOG_PATH || '/app/logs/audit',
+  verbose: true,
+  authPort: parseInt(process.env.PORT || '3000', 10),
+  authHost: '0.0.0.0'
+}
+
+try {
+  const daemon = new Daemon(config as any)
+  await daemon.start()
+} catch (error: any) {
+  console.error(`Fatal error starting Daemon:`, error)
+  process.exit(1)
+}

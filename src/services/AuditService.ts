@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import { createWriteStream, WriteStream, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
+import { log } from '../lib/logger.js'
 
 export interface AuditEvent {
   // Identity
@@ -137,8 +138,8 @@ export class AuditService {
     this.events.push(auditEvent)
     if (this.events.length > 1000) this.events.shift()
 
-    // Structured console output
-    console.log(
+    // Structured log output
+    log.audit(
       JSON.stringify({
         ...auditEvent,
         _type: 'AUDIT'

@@ -8,6 +8,8 @@
  * Singleton: import { checkpointService } from './CheckpointService.js'
  */
 
+import { log } from '../lib/logger.js'
+
 const TESTING_PORT = parseInt(process.env.VERITY_SIGNER_TESTING_PORT || '9200', 10)
 
 class CheckpointService {
@@ -39,11 +41,11 @@ class CheckpointService {
       websocket: {
         open(ws) {
           self.clients.add(ws)
-          console.log(`[testing] Stream client connected (${self.clients.size} total)`)
+          log.daemon(`Stream client connected (${self.clients.size} total)`)
         },
         close(ws) {
           self.clients.delete(ws)
-          console.log(`[testing] Stream client disconnected (${self.clients.size} remaining)`)
+          log.daemon(`Stream client disconnected (${self.clients.size} remaining)`)
         },
         message() {
           // No incoming messages expected
@@ -51,7 +53,7 @@ class CheckpointService {
       },
     })
 
-    console.log(`[testing] Checkpoint stream listening on port ${TESTING_PORT}`)
+    log.daemon(`Checkpoint stream listening on port ${TESTING_PORT}`)
   }
 
   /**
@@ -93,7 +95,7 @@ class CheckpointService {
       }
     }
 
-    console.log(`[testing] Broadcast: ${step} (${this.clients.size} clients)`)
+    log.daemon(`Checkpoint Broadcast: ${step} (${this.clients.size} clients)`)
   }
 }
 

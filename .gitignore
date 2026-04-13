@@ -1,14 +1,14 @@
 node_modules
-src/*.js
-dist
+/dist
+src/**/*.js
 **/*.d.ts
 **/*.d.ts.map
-nsecbunker.json
-connection.txt
-config
 .env
 .turbo
-#prisma
+
+# Legacy/Dev artifacts
+/nsecbunker.json
+/connection.txt
 
 # OS-specific
 .DS_Store

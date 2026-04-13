@@ -5,9 +5,8 @@
  * before allowing local storage. For now, mock returns true.
  */
 
-import createDebug from 'debug'
+import { log } from '../lib/logger.js'
 
-const debug = createDebug('nsecbunker:backup')
 
 export interface BackupResult {
   success: boolean
@@ -35,7 +34,7 @@ export async function backupKey(
   },
   pubkey: string
 ): Promise<BackupResult> {
-  debug(`Backing up key: ${keyName}`)
+  log.keys(`Backing up key: ${keyName}`)
 
   // TODO: Implement real backup logic
   // - Store to remote service
@@ -43,7 +42,7 @@ export async function backupKey(
   // - Handle retries
 
   // Mock: always succeed
-  debug(`Backup mock: key ${keyName} "backed up" successfully`)
+  log.keys(`Backup mock: key ${keyName} "backed up" successfully`)
 
   return {
     success: true,
@@ -55,7 +54,7 @@ export async function backupKey(
  * Verify a key exists in remote backup.
  */
 export async function verifyBackup(keyName: string): Promise<boolean> {
-  debug(`Verifying backup for key: ${keyName}`)
+  log.keys(`Verifying backup for key: ${keyName}`)
 
   // Mock: always return true
   return true
@@ -70,7 +69,7 @@ export async function restoreFromBackup(keyName: string): Promise<{
   authTag: string
   pubkey: string
 } | null> {
-  debug(`Restoring key from backup: ${keyName}`)
+  log.keys(`Restoring key from backup: ${keyName}`)
 
   // Mock: return null (not implemented)
   return null

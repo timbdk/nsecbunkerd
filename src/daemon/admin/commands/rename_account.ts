@@ -1,9 +1,9 @@
 import { NDKPrivateKeySigner } from '@nostr-dev-kit/ndk'
-import { IConfig, getCurrentConfig } from '../../../config'
-import { publishUsernameEvent } from '../../lib/username-event'
-import prisma from '../../../db'
-import { log, logError } from '../../../lib/logger'
-import { retrieveKey } from '../../../services/KeyService'
+import { IConfig, getCurrentConfig } from '../../../config/index.js'
+import { publishUsernameEvent } from '../../lib/username-event.js'
+import prisma from '../../../db.js'
+import { log, logError } from '../../../lib/logger.js'
+import { retrieveKey } from '../../../services/KeyService.js'
 
 export async function validate(currentConfig: IConfig, pubkey: string, newUsername: string) {
   if (!pubkey) {
