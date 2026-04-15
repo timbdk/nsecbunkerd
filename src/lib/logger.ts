@@ -67,6 +67,26 @@ export function auditSigningRequest(event: SigningAuditEvent): void {
     timestamp: event.timestamp || new Date().toISOString()
   }
 
+  // Log to AuditService for persistence and testing API visibility
+  import('../services/AuditService.js').then(({ auditService }) => {
+    auditService.log({
+      correlationId: 'legacy-audit', // Legacy audit doesn't have correlation IDs yet
+      type: 'nip46_response',
+      method: entry.method,
+      status: entry.allowed ? 'success' : 'failure',
+      clientPubkey: entry.clientPubkey,
+      userPubkey: entry.userPubkey,
+      details: {
+        keyName: entry.keyName,
+        reason: entry.reason,
+        eventKind: entry.eventKind
+      }
+    })
+  }).catch(err => {
+    // Fallback if import fails during shutdown or odd race
+    console.error('Failed to log to AuditService:', err)
+  })
+
   // Always log to console in JSON format for production log aggregation
   console.log(JSON.stringify({ type: 'SIGNING_AUDIT', ...entry }))
 

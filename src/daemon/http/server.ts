@@ -81,8 +81,8 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
             if (clientPubkey) {
               await allowAllRequestsFromKey(clientPubkey, keyName, 'connect', undefined, 'test-client')
               await allowAllRequestsFromKey(clientPubkey, keyName, 'sign_event', undefined, 'test-client', { kind: null })
-              await allowAllRequestsFromKey(clientPubkey, keyName, 'encrypt', undefined, 'test-client')
-              await allowAllRequestsFromKey(clientPubkey, keyName, 'decrypt', undefined, 'test-client')
+              await allowAllRequestsFromKey(clientPubkey, keyName, 'nip44_encrypt', undefined, 'test-client')
+              await allowAllRequestsFromKey(clientPubkey, keyName, 'nip44_decrypt', undefined, 'test-client')
               await allowAllRequestsFromKey(clientPubkey, keyName, 'switch_relays', undefined, 'test-client')
               await allowAllRequestsFromKey(clientPubkey, keyName, 'get_public_key', undefined, 'test-client')
               await allowAllRequestsFromKey(clientPubkey, keyName, 'ping', undefined, 'test-client')
@@ -124,8 +124,8 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
 
             await allowAllRequestsFromKey(clientPubkey, keyName, 'connect', undefined, 'test-client')
             await allowAllRequestsFromKey(clientPubkey, keyName, 'sign_event', undefined, 'test-client', { kind: null })
-            await allowAllRequestsFromKey(clientPubkey, keyName, 'encrypt', undefined, 'test-client')
-            await allowAllRequestsFromKey(clientPubkey, keyName, 'decrypt', undefined, 'test-client')
+            await allowAllRequestsFromKey(clientPubkey, keyName, 'nip44_encrypt', undefined, 'test-client')
+            await allowAllRequestsFromKey(clientPubkey, keyName, 'nip44_decrypt', undefined, 'test-client')
             await allowAllRequestsFromKey(clientPubkey, keyName, 'switch_relays', undefined, 'test-client')
             await allowAllRequestsFromKey(clientPubkey, keyName, 'get_public_key', undefined, 'test-client')
             await allowAllRequestsFromKey(clientPubkey, keyName, 'ping', undefined, 'test-client')
@@ -198,13 +198,15 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
           const method = url.searchParams.get('method')
           const status = url.searchParams.get('status')
           const type = url.searchParams.get('type')
+          const clientPubkey = url.searchParams.get('clientPubkey')
 
           const { auditService } = await import('../../services/AuditService.js')
           const events = auditService.getEvents({
             ...(correlationId && { correlationId }),
             ...(method && { method }),
             ...(status && { status: status as any }),
-            ...(type && { type: type as any })
+            ...(type && { type: type as any }),
+            ...(clientPubkey && { clientPubkey })
           })
           return Response.json({ events, count: events.length }, { headers })
         }

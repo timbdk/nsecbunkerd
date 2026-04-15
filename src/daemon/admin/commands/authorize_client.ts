@@ -71,8 +71,8 @@ export default async function authorizeClient(admin: AdminInterface, req: NDKRpc
     await allowAllRequestsFromKey(clientPubkey, keyName, 'sign_event', undefined, 'client authorization', {
       kind: null
     })
-    await allowAllRequestsFromKey(clientPubkey, keyName, 'encrypt', undefined, 'client authorization')
-    await allowAllRequestsFromKey(clientPubkey, keyName, 'decrypt', undefined, 'client authorization')
+    await allowAllRequestsFromKey(clientPubkey, keyName, 'nip44_encrypt', undefined, 'client authorization')
+    await allowAllRequestsFromKey(clientPubkey, keyName, 'nip44_decrypt', undefined, 'client authorization')
     // NDK calls these utility methods during blockUntilReady() after the initial 'connect' handshake.
     // Without explicit authorization, the daemon falls through to requestAuthorization() which waits
     // for manual admin approval — hanging forever and causing the client's connection to timeout.

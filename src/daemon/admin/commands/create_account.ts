@@ -161,8 +161,8 @@ export async function createAccountReal(
 async function grantPermissions(req: NDKRpcRequest, keyName: string, clientPubkey?: string) {
   await allowAllRequestsFromKey(req.pubkey, keyName, 'connect', undefined, 'registrar')
   await allowAllRequestsFromKey(req.pubkey, keyName, 'sign_event', undefined, 'registrar', { kind: null })
-  await allowAllRequestsFromKey(req.pubkey, keyName, 'encrypt', undefined, 'registrar')
-  await allowAllRequestsFromKey(req.pubkey, keyName, 'decrypt', undefined, 'registrar')
+  await allowAllRequestsFromKey(req.pubkey, keyName, 'nip44_encrypt', undefined, 'registrar')
+  await allowAllRequestsFromKey(req.pubkey, keyName, 'nip44_decrypt', undefined, 'registrar')
   await allowAllRequestsFromKey(req.pubkey, keyName, 'switch_relays', undefined, 'registrar')
   await allowAllRequestsFromKey(req.pubkey, keyName, 'get_public_key', undefined, 'registrar')
   await allowAllRequestsFromKey(req.pubkey, keyName, 'ping', undefined, 'registrar')
@@ -170,8 +170,8 @@ async function grantPermissions(req: NDKRpcRequest, keyName: string, clientPubke
   if (clientPubkey) {
     await allowAllRequestsFromKey(clientPubkey, keyName, 'connect', undefined, 'client')
     await allowAllRequestsFromKey(clientPubkey, keyName, 'sign_event', undefined, 'client', { kind: null })
-    await allowAllRequestsFromKey(clientPubkey, keyName, 'encrypt', undefined, 'client')
-    await allowAllRequestsFromKey(clientPubkey, keyName, 'decrypt', undefined, 'client')
+    await allowAllRequestsFromKey(clientPubkey, keyName, 'nip44_encrypt', undefined, 'client')
+    await allowAllRequestsFromKey(clientPubkey, keyName, 'nip44_decrypt', undefined, 'client')
     await allowAllRequestsFromKey(clientPubkey, keyName, 'switch_relays', undefined, 'client')
     await allowAllRequestsFromKey(clientPubkey, keyName, 'get_public_key', undefined, 'client')
     await allowAllRequestsFromKey(clientPubkey, keyName, 'ping', undefined, 'client')
