@@ -137,7 +137,7 @@ export async function allowAllRequestsFromKey(
     // Upsert the Session with the given clientPubkey
     const upsertedSession = await prisma.session.upsert({
       where: { keyName_clientPubkey: { keyName, clientPubkey } },
-      update: {},
+      update: { revokedAt: null },
       create: { keyName, clientPubkey, description }
     })
 

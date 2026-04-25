@@ -1,4 +1,4 @@
-import NDK, { NDKEvent, NDKPrivateKeySigner, Nip46PermitCallback, Nip46PermitCallbackParams } from '@nostr-dev-kit/ndk'
+import NDK, { NDKEvent, NDKPrivateKeySigner, NDKRelayAuthPolicies, Nip46PermitCallback, Nip46PermitCallbackParams } from '@nostr-dev-kit/ndk'
 import { log, auditSigningRequest, logStartup, logError } from '../lib/logger.js'
 import { nip19, utils } from 'nostr-tools'
 const { bytesToHex } = utils
@@ -111,6 +111,8 @@ export class Daemon {
     if (process.env.SIGNER_MASTER_KEY) {
       log.daemon('Daemon NDK Signer configured with Master Key')
       this.ndk.signer = new NDKPrivateKeySigner(process.env.SIGNER_MASTER_KEY)
+      // Enable NIP-42 auto-auth so the relay accepts writes from this connection
+      this.ndk.relayAuthDefaultPolicy = NDKRelayAuthPolicies.signIn({ ndk: this.ndk })
     }
     this.ndk.pool.on('relay:connect', (r) => {
       log.daemon(`✅ Connected to ${r.url}`)
@@ -193,7 +195,27 @@ export class Daemon {
     }
 
     checkpointService.start()
-    await this.ndk.connect(5000)
+    
+    // Retry initial connection to relay indefinitely (fault tolerance for orchestration)
+    let connected = false
+    let attempts = 0
+    const RETRY_DELAY_MS = 2000
+
+    while (!connected) {
+      try {
+        attempts++
+        log.daemon(`Connection attempt ${attempts} to relay...`)
+        await this.ndk.connect(5000)
+        connected = true
+        const user = await this.ndk.signer?.user()
+        logStartup(`nsecBunker connected and ready: ${user?.npub || 'unknown identity'} after ${attempts} attempts`)
+      } catch (e: any) {
+        logError('daemon', `Initial connection failed: ${e.message}`)
+        log.daemon(`Retrying in ${RETRY_DELAY_MS}ms...`)
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS))
+      }
+    }
+
     if (this.config.authPort) {
       this.httpServer = startHttpServer(this, this.config.authPort, this.config.authHost)
     }

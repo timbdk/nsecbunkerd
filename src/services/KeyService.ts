@@ -144,7 +144,7 @@ export async function validateAllKeys(): Promise<{
 }> {
   const keys = await prisma.key.findMany({
     where: {
-      encryptedKey: { not: null }
+      status: 'ACTIVE'
     }
   })
 

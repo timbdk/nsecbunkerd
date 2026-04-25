@@ -2,6 +2,7 @@ import NDK, {
   NDKEvent,
   NDKKind,
   NDKPrivateKeySigner,
+  NDKRelayAuthPolicies,
   NDKRpcRequest,
   NDKRpcResponse,
   NDKUser,
@@ -49,6 +50,8 @@ class AdminInterface {
       explicitRelayUrls: opts.adminRelays,
       signer: new NDKPrivateKeySigner(opts.key)
     })
+    // Enable NIP-42 auto-auth for admin relay connections
+    this.ndk.relayAuthDefaultPolicy = NDKRelayAuthPolicies.signIn({ ndk: this.ndk })
     this.ndk.signer?.user().then((user: NDKUser) => {
       this.signerUser = user
       this.connect()
