@@ -1,4 +1,5 @@
 import { NDKPrivateKeySigner, NDKRpcRequest, NDKUser } from '@nostr-dev-kit/ndk'
+import { KIND_ADMIN_RESPONSE } from 'verity-event-validation-module'
 import AdminInterface from '..'
 import { allowAllRequestsFromKey } from '../../lib/acl/index.js'
 import { publishUsernameEvent } from '../../lib/username-event.js'
@@ -52,8 +53,7 @@ export default async function createAccount(admin: AdminInterface, req: NDKRpcRe
     username = await validateUsername(username)
   } catch (e: any) {
     log.admin(`[${correlationId?.slice(0, 8) || 'no-corr'}] create_account validation failed: ${e.message}`)
-    // Admin responses MUST use Kind 24134
-    admin.rpc.sendResponse(req.id, req.pubkey, 'error', 24134, e.message)
+    admin.rpc.sendResponse(req.id, req.pubkey, 'error', KIND_ADMIN_RESPONSE, e.message)
     return
   }
 
@@ -96,8 +96,7 @@ export async function createAccountReal(
           log.admin(`Found existing pubkey ${existingKey.pubkey} for ${username}`)
           await grantPermissions(req, keyName, clientPubkey)
           log.admin('permissions re-granted for existing user')
-          // Admin responses MUST use Kind 24134
-          return admin.rpc.sendResponse(req.id, req.pubkey, existingKey.pubkey, 24134)
+          return admin.rpc.sendResponse(req.id, req.pubkey, existingKey.pubkey, KIND_ADMIN_RESPONSE)
         }
       }
       throw e
@@ -149,16 +148,14 @@ export async function createAccountReal(
 
     checkpointService.broadcast('signer.response.sent', {
       method: 'create_account',
-      kind: 24134,
+      kind: KIND_ADMIN_RESPONSE,
     })
 
-    // Admin responses MUST use Kind 24134
-    return admin.rpc.sendResponse(req.id, req.pubkey, generatedUser.pubkey, 24134)
+    return admin.rpc.sendResponse(req.id, req.pubkey, generatedUser.pubkey, KIND_ADMIN_RESPONSE)
   } catch (e: any) {
     log.admin(`error creating account: ${e.message}`)
     scope.logError(e, { username, domain })
-    // Admin responses MUST use Kind 24134
-    return admin.rpc.sendResponse(req.id, req.pubkey, 'error', 24134, e.message)
+    return admin.rpc.sendResponse(req.id, req.pubkey, 'error', KIND_ADMIN_RESPONSE, e.message)
   }
 }
 

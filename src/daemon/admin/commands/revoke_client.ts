@@ -1,4 +1,5 @@
 import { NDKRpcRequest } from '@nostr-dev-kit/ndk'
+import { KIND_ADMIN_RESPONSE } from 'verity-event-validation-module'
 import AdminInterface from '../index.js'
 import { rejectAllRequestsFromKey } from '../../lib/acl/index.js'
 import prisma from '../../../db.js'
@@ -22,8 +23,7 @@ export default async function revokeClient(admin: AdminInterface, req: NDKRpcReq
 
   if (!keyName) {
     log.admin(`${corrPrefix} Invalid params: keyName required`)
-    // Admin responses MUST use Kind 24134
-    return admin.rpc.sendResponse(req.id, req.pubkey, 'error', 24134, 'Invalid params: keyName required')
+    return admin.rpc.sendResponse(req.id, req.pubkey, 'error', KIND_ADMIN_RESPONSE, 'Invalid params: keyName required')
   }
 
   log.admin(`${corrPrefix} Revoking ${clientPubkey ? 'client ' + clientPubkey.slice(0, 16) + '...' : 'ALL clients'} from key ${keyName}`)
@@ -32,8 +32,7 @@ export default async function revokeClient(admin: AdminInterface, req: NDKRpcReq
   const key = await prisma.key.findUnique({ where: { keyName } })
   if (!key) {
     log.admin(`Key not found: ${keyName}`)
-    // Admin responses MUST use Kind 24134
-    return admin.rpc.sendResponse(req.id, req.pubkey, 'error', 24134, `Key not found: ${keyName}`)
+    return admin.rpc.sendResponse(req.id, req.pubkey, 'error', KIND_ADMIN_RESPONSE, `Key not found: ${keyName}`)
   }
 
   try {
@@ -65,14 +64,12 @@ export default async function revokeClient(admin: AdminInterface, req: NDKRpcReq
 
     checkpointService.broadcast('signer.response.sent', {
       method: 'revoke_client',
-      kind: 24134,
+      kind: KIND_ADMIN_RESPONSE,
     })
 
-    // Admin responses MUST use Kind 24134
-    return admin.rpc.sendResponse(req.id, req.pubkey, 'revoked', 24134)
+    return admin.rpc.sendResponse(req.id, req.pubkey, 'revoked', KIND_ADMIN_RESPONSE)
   } catch (e: any) {
     log.admin(`Error revoking client: ${e.message}`)
-    // Admin responses MUST use Kind 24134
-    return admin.rpc.sendResponse(req.id, req.pubkey, 'error', 24134, e.message)
+    return admin.rpc.sendResponse(req.id, req.pubkey, 'error', KIND_ADMIN_RESPONSE, e.message)
   }
 }

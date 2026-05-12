@@ -10,6 +10,7 @@ import NDK, {
   NDKNostrRpc
 } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
+import { KIND_ADMIN_COMMAND, KIND_ADMIN_RESPONSE } from 'verity-event-validation-module'
 import { Key, Session } from '../run.js'
 import { allowAllRequestsFromKey } from '../lib/acl/index.js'
 import prisma from '../../db.js'
@@ -82,10 +83,10 @@ class AdminInterface {
     this.ndk
       .connect(2500)
       .then(() => {
-        // Subscribe only to Kind 24133 (admin commands). Responses are Kind 24134
+        // Subscribe only to admin commands. Responses use KIND_ADMIN_RESPONSE
         // and are published by us, not consumed.
         this.rpc.subscribe({
-          kinds: [24133 as number],
+          kinds: [KIND_ADMIN_COMMAND as number],
           '#p': [this.signerUser!.pubkey]
         })
 
@@ -138,22 +139,22 @@ class AdminInterface {
 
           checkpointService.broadcast('signer.response.sent', {
             method: 'rename_account',
-            kind: 24134,
+            kind: KIND_ADMIN_RESPONSE,
           })
 
-          // Admin responses MUST use Kind 24134 (not 24133 which is for commands)
-          return this.rpc.sendResponse(req.id, req.pubkey, result, 24134)
+          // Admin responses use KIND_ADMIN_RESPONSE from event-validation-module (SSOT)
+          return this.rpc.sendResponse(req.id, req.pubkey, result, KIND_ADMIN_RESPONSE)
         }
 
         default:
           log.admin(`Unknown method ${req.method}`)
-          // Admin responses MUST use Kind 24134 regardless of the request kind
-          return this.rpc.sendResponse(req.id, req.pubkey, JSON.stringify(['error', `Unknown method ${req.method}`]), 24134)
+          // Admin responses use KIND_ADMIN_RESPONSE from event-validation-module (SSOT)
+          return this.rpc.sendResponse(req.id, req.pubkey, JSON.stringify(['error', `Unknown method ${req.method}`]), KIND_ADMIN_RESPONSE)
       }
     } catch (err: any) {
       log.admin(`Error handling request ${req.method}: ${err?.message ?? err}`, req.params)
-      // Admin responses MUST use Kind 24134
-      return this.rpc.sendResponse(req.id, req.pubkey, 'error', 24134, err?.message)
+      // Admin responses use KIND_ADMIN_RESPONSE from event-validation-module (SSOT)
+      return this.rpc.sendResponse(req.id, req.pubkey, 'error', KIND_ADMIN_RESPONSE, err?.message)
     }
   }
 
