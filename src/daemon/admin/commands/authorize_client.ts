@@ -1,4 +1,4 @@
-import { NDKKind, NDKRpcRequest } from '@nostr-dev-kit/ndk'
+import { NDKRpcRequest } from '@nostr-dev-kit/ndk'
 import AdminInterface from '../index.js'
 import { allowAllRequestsFromKey } from '../../lib/acl/index.js'
 import prisma from '../../../db.js'
@@ -31,11 +31,12 @@ export default async function authorizeClient(admin: AdminInterface, req: NDKRpc
       `${corrPrefix} Invalid params: keyName=${keyName}, userPubkey=${userPubkey?.slice(0, 16)}, clientPubkey=${clientPubkey?.slice(0, 16)}`
     )
     scope.logError(new Error('Invalid params'), { keyName, userPubkey, clientPubkey })
+    // Admin responses MUST use Kind 24134
     return admin.rpc.sendResponse(
       req.id,
       req.pubkey,
       'error',
-      NDKKind.NostrConnect,
+      24134,
       'Invalid params: keyName, userPubkey, and clientPubkey required'
     )
   }
@@ -55,14 +56,16 @@ export default async function authorizeClient(admin: AdminInterface, req: NDKRpc
   if (!key) {
     log.admin(`Key not found: ${keyName}`)
     scope.logError(new Error('Key not found'), { keyName })
-    return admin.rpc.sendResponse(req.id, req.pubkey, 'error', NDKKind.NostrConnect, `Key not found: ${keyName}`)
+    // Admin responses MUST use Kind 24134
+    return admin.rpc.sendResponse(req.id, req.pubkey, 'error', 24134, `Key not found: ${keyName}`)
   }
 
   // Verify the userPubkey matches (ensures the requester knows the correct user)
   if (key.pubkey !== userPubkey) {
     log.admin(`Pubkey mismatch: expected ${key.pubkey.slice(0, 16)}..., got ${userPubkey.slice(0, 16)}...`)
     scope.logError(new Error('Pubkey mismatch'), { expected: key.pubkey, got: userPubkey })
-    return admin.rpc.sendResponse(req.id, req.pubkey, 'error', NDKKind.NostrConnect, 'User pubkey mismatch')
+    // Admin responses MUST use Kind 24134
+    return admin.rpc.sendResponse(req.id, req.pubkey, 'error', 24134, 'User pubkey mismatch')
   }
 
   try {
@@ -98,12 +101,15 @@ export default async function authorizeClient(admin: AdminInterface, req: NDKRpc
 
     checkpointService.broadcast('signer.response.sent', {
       method: 'authorize_client',
+      kind: 24134,
     })
 
-    return admin.rpc.sendResponse(req.id, req.pubkey, 'authorized', NDKKind.NostrConnect)
+    // Admin responses MUST use Kind 24134
+    return admin.rpc.sendResponse(req.id, req.pubkey, 'authorized', 24134)
   } catch (e: any) {
     log.admin(`Error authorizing client: ${e.message}`)
     scope.logError(e, { keyName, clientPubkey })
-    return admin.rpc.sendResponse(req.id, req.pubkey, 'error', NDKKind.NostrConnect, e.message)
+    // Admin responses MUST use Kind 24134
+    return admin.rpc.sendResponse(req.id, req.pubkey, 'error', 24134, e.message)
   }
 }

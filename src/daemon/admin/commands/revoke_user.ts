@@ -1,4 +1,4 @@
-import { NDKKind, NDKRpcRequest } from '@nostr-dev-kit/ndk'
+import { NDKRpcRequest } from '@nostr-dev-kit/ndk'
 import AdminInterface from '../index.js'
 import { rejectAllRequestsFromKey } from '../../lib/acl/index.js'
 import prisma from '../../../db.js'
@@ -19,7 +19,8 @@ export default async function revokeUser(admin: AdminInterface, req: NDKRpcReque
     return revokeAllClients(admin, req, params[0], params[1])
   } else {
     log.admin(`Invalid params: ${JSON.stringify(params)}`)
-    return admin.rpc.sendResponse(req.id, req.pubkey, 'error', NDKKind.NostrConnect, 'Invalid params')
+    // Admin responses MUST use Kind 24134
+    return admin.rpc.sendResponse(req.id, req.pubkey, 'error', 24134, 'Invalid params')
   }
 }
 
@@ -43,11 +44,14 @@ async function revokeAllClients(admin: AdminInterface, req: NDKRpcRequest, keyNa
 
     checkpointService.broadcast('signer.response.sent', {
       method: 'revoke_user',
+      kind: 24134,
     })
 
-    return admin.rpc.sendResponse(req.id, req.pubkey, 'revoked', NDKKind.NostrConnect)
+    // Admin responses MUST use Kind 24134
+    return admin.rpc.sendResponse(req.id, req.pubkey, 'revoked', 24134)
   } catch (e: any) {
     log.admin(`Error revoking user: ${e.message}`)
-    return admin.rpc.sendResponse(req.id, req.pubkey, 'error', NDKKind.NostrConnect, e.message)
+    // Admin responses MUST use Kind 24134
+    return admin.rpc.sendResponse(req.id, req.pubkey, 'error', 24134, e.message)
   }
 }

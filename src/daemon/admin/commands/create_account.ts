@@ -1,4 +1,4 @@
-import { NDKKind, NDKPrivateKeySigner, NDKRpcRequest, NDKUser } from '@nostr-dev-kit/ndk'
+import { NDKPrivateKeySigner, NDKRpcRequest, NDKUser } from '@nostr-dev-kit/ndk'
 import AdminInterface from '..'
 import { allowAllRequestsFromKey } from '../../lib/acl/index.js'
 import { publishUsernameEvent } from '../../lib/username-event.js'
@@ -51,9 +51,9 @@ export default async function createAccount(admin: AdminInterface, req: NDKRpcRe
   try {
     username = await validateUsername(username)
   } catch (e: any) {
-    const originalKind = req.event.kind!
     log.admin(`[${correlationId?.slice(0, 8) || 'no-corr'}] create_account validation failed: ${e.message}`)
-    admin.rpc.sendResponse(req.id, req.pubkey, 'error', originalKind, e.message)
+    // Admin responses MUST use Kind 24134
+    admin.rpc.sendResponse(req.id, req.pubkey, 'error', 24134, e.message)
     return
   }
 
@@ -96,7 +96,8 @@ export async function createAccountReal(
           log.admin(`Found existing pubkey ${existingKey.pubkey} for ${username}`)
           await grantPermissions(req, keyName, clientPubkey)
           log.admin('permissions re-granted for existing user')
-          return admin.rpc.sendResponse(req.id, req.pubkey, existingKey.pubkey, NDKKind.NostrConnectAdmin)
+          // Admin responses MUST use Kind 24134
+          return admin.rpc.sendResponse(req.id, req.pubkey, existingKey.pubkey, 24134)
         }
       }
       throw e
@@ -148,13 +149,16 @@ export async function createAccountReal(
 
     checkpointService.broadcast('signer.response.sent', {
       method: 'create_account',
+      kind: 24134,
     })
 
-    return admin.rpc.sendResponse(req.id, req.pubkey, generatedUser.pubkey, NDKKind.NostrConnectAdmin)
+    // Admin responses MUST use Kind 24134
+    return admin.rpc.sendResponse(req.id, req.pubkey, generatedUser.pubkey, 24134)
   } catch (e: any) {
     log.admin(`error creating account: ${e.message}`)
     scope.logError(e, { username, domain })
-    return admin.rpc.sendResponse(req.id, req.pubkey, 'error', NDKKind.NostrConnectAdmin, e.message)
+    // Admin responses MUST use Kind 24134
+    return admin.rpc.sendResponse(req.id, req.pubkey, 'error', 24134, e.message)
   }
 }
 

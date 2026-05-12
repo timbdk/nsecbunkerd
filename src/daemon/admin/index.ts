@@ -9,6 +9,7 @@ import NDK, {
   NostrEvent,
   NDKNostrRpc
 } from '@nostr-dev-kit/ndk'
+import { nip19 } from 'nostr-tools'
 import { Key, Session } from '../run.js'
 import { allowAllRequestsFromKey } from '../lib/acl/index.js'
 import prisma from '../../db.js'
@@ -54,6 +55,7 @@ class AdminInterface {
     this.ndk.relayAuthDefaultPolicy = NDKRelayAuthPolicies.signIn({ ndk: this.ndk })
     this.ndk.signer?.user().then((user: NDKUser) => {
       this.signerUser = user
+      this.validateAdminIdentity(user)
       this.connect()
     })
 
@@ -80,8 +82,10 @@ class AdminInterface {
     this.ndk
       .connect(2500)
       .then(() => {
+        // Subscribe only to Kind 24133 (admin commands). Responses are Kind 24134
+        // and are published by us, not consumed.
         this.rpc.subscribe({
-          kinds: [NDKKind.NostrConnect, 24134 as number],
+          kinds: [24133 as number],
           '#p': [this.signerUser!.pubkey]
         })
 
@@ -134,19 +138,22 @@ class AdminInterface {
 
           checkpointService.broadcast('signer.response.sent', {
             method: 'rename_account',
+            kind: 24134,
           })
 
-          return this.rpc.sendResponse(req.id, req.pubkey, result, NDKKind.NostrConnectAdmin)
+          // Admin responses MUST use Kind 24134 (not 24133 which is for commands)
+          return this.rpc.sendResponse(req.id, req.pubkey, result, 24134)
         }
 
         default:
-          const originalKind = req.event.kind!
           log.admin(`Unknown method ${req.method}`)
-          return this.rpc.sendResponse(req.id, req.pubkey, JSON.stringify(['error', `Unknown method ${req.method}`]), originalKind)
+          // Admin responses MUST use Kind 24134 regardless of the request kind
+          return this.rpc.sendResponse(req.id, req.pubkey, JSON.stringify(['error', `Unknown method ${req.method}`]), 24134)
       }
     } catch (err: any) {
       log.admin(`Error handling request ${req.method}: ${err?.message ?? err}`, req.params)
-      return this.rpc.sendResponse(req.id, req.pubkey, 'error', NDKKind.NostrConnectAdmin, err?.message)
+      // Admin responses MUST use Kind 24134
+      return this.rpc.sendResponse(req.id, req.pubkey, 'error', 24134, err?.message)
     }
   }
 
@@ -168,6 +175,34 @@ class AdminInterface {
 
     if (!(await validateRequestFromAdmin(req, this.npubs))) {
       throw new Error('You are not designated to administrate this bunker')
+    }
+  }
+
+  /**
+   * Validates that the derived admin pubkey matches SIGNER_NPUB if set.
+   * Prevents configuration drift between nsecbunker.json and environment variables.
+   */
+  private validateAdminIdentity(user: NDKUser) {
+    const derivedPubkey = user.pubkey
+    const derivedNpub = nip19.npubEncode(derivedPubkey)
+    log.admin(`🔑 Admin interface identity: ${derivedNpub} (${derivedPubkey.substring(0, 16)}...)`)
+
+    const signerNpub = process.env.SIGNER_NPUB
+    if (signerNpub) {
+      try {
+        const { data: expectedPubkey } = nip19.decode(signerNpub) as { data: string }
+        if (expectedPubkey !== derivedPubkey) {
+          log.admin(`❌ FATAL: SIGNER_NPUB mismatch!`)
+          log.admin(`   Expected (SIGNER_NPUB): ${expectedPubkey.substring(0, 16)}...`)
+          log.admin(`   Derived (admin.key):    ${derivedPubkey.substring(0, 16)}...`)
+          log.admin(`   The admin.key in nsecbunker.json does not match SIGNER_NPUB.`)
+          process.exit(1)
+        }
+        log.admin(`✅ SIGNER_NPUB matches derived admin pubkey`)
+      } catch (e: any) {
+        log.admin(`❌ FATAL: Invalid SIGNER_NPUB format: ${e.message}`)
+        process.exit(1)
+      }
     }
   }
 }
