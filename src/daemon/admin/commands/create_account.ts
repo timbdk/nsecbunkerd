@@ -1,5 +1,5 @@
 import { NDKPrivateKeySigner, NDKRpcRequest, NDKUser } from '@nostr-dev-kit/ndk'
-import { KIND_ADMIN_RESPONSE } from 'verity-event-validation-module'
+import { KIND_ADMIN_RESPONSE, RESERVED_USERNAMES } from 'verity-event-validation-module'
 import AdminInterface from '..'
 import { allowAllRequestsFromKey } from '../../lib/acl/index.js'
 import { publishUsernameEvent } from '../../lib/username-event.js'
@@ -25,14 +25,14 @@ export async function validate(username: string) {
   }
 }
 
-const RESERVED_USERNAMES = ['admin', 'root', '_', 'administrator', '__']
+
 
 async function validateUsername(username: string | undefined) {
   if (!username || username.length === 0) {
     username = Math.random().toString(36).substring(2, 15)
   }
 
-  if (RESERVED_USERNAMES.includes(username)) {
+  if (RESERVED_USERNAMES.has(username)) {
     throw new Error('username not available')
   }
 
@@ -40,8 +40,8 @@ async function validateUsername(username: string | undefined) {
 }
 
 export default async function createAccount(admin: AdminInterface, req: NDKRpcRequest) {
-  // params: [username, _domain (ignored), email?, clientPubkey?, correlationId?]
-  let [username, , email, clientPubkey, correlationId] = req.params as [string?, string?, string?, string?, string?]
+  // params: [username, clientPubkey?, correlationId?]
+  let [username, clientPubkey, correlationId] = req.params as [string?, string?, string?]
 
   log.admin(`[${correlationId?.slice(0, 8) || 'no-corr'}] create_account request from ${req.pubkey.slice(0, 16)}...`)
 
@@ -53,14 +53,13 @@ export default async function createAccount(admin: AdminInterface, req: NDKRpcRe
     return
   }
 
-  return createAccountReal(admin, req, username, email, clientPubkey)
+  return createAccountReal(admin, req, username, clientPubkey)
 }
 
 export async function createAccountReal(
   admin: AdminInterface,
   req: NDKRpcRequest,
   username: string,
-  email?: string,
   clientPubkey?: string
 ): Promise<void> {
   const { auditService } = await import('../../../services/AuditService.js')
@@ -70,7 +69,7 @@ export async function createAccountReal(
     clientPubkey,
     requestEventId: req.event.id,
     userIdentifier: username,
-    details: { username, email }
+    details: { username }
   })
 
   try {
