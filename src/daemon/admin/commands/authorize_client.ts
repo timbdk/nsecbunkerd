@@ -15,7 +15,7 @@ import { log } from '../../../lib/logger.js'
  * grants that client keypair permission to connect and sign with the user's key.
  *
  * Params: [keyName, userPubkey, clientPubkey, correlationId?]
- * - keyName: The NIP-05 style key name (e.g., "username@verity.local")
+ * - keyName: The key identifier (e.g., "username")
  * - userPubkey: The hex pubkey of the user's key (for verification)
  * - clientPubkey: The hex pubkey of the client's ephemeral keypair (to authorize)
  * - correlationId: Optional correlation ID for tracing across services

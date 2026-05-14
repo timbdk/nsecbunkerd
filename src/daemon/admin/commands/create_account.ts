@@ -10,15 +10,14 @@ import { backupKey } from '../../../services/BackupService.js'
 import { checkpointService } from '../../../services/CheckpointService.js'
 
 
-export async function validate(username: string, domain: string) {
+export async function validate(username: string) {
   if (!username) {
     throw new Error('username is required')
   }
 
   // Check if username already exists in database
-  const keyName = `${username}@${domain}`
   const existingKey = await prisma.key.findFirst({
-    where: { keyName, status: 'ACTIVE' }
+    where: { keyName: username, status: 'ACTIVE' }
   })
 
   if (existingKey) {
@@ -41,11 +40,8 @@ async function validateUsername(username: string | undefined) {
 }
 
 export default async function createAccount(admin: AdminInterface, req: NDKRpcRequest) {
-  // params: [username, domain, email?, clientPubkey?, correlationId?]
-  let [username, domain, email, clientPubkey, correlationId] = req.params as [string?, string?, string?, string?, string?]
-  const fallbackDomain = 'verity.local' // Or get from config but we don't validate against hardcoded config.domains anymore
-
-  if (!domain || domain.length === 0) domain = fallbackDomain
+  // params: [username, _domain (ignored), email?, clientPubkey?, correlationId?]
+  let [username, , email, clientPubkey, correlationId] = req.params as [string?, string?, string?, string?, string?]
 
   log.admin(`[${correlationId?.slice(0, 8) || 'no-corr'}] create_account request from ${req.pubkey.slice(0, 16)}...`)
 
@@ -57,14 +53,13 @@ export default async function createAccount(admin: AdminInterface, req: NDKRpcRe
     return
   }
 
-  return createAccountReal(admin, req, username, domain, email, clientPubkey)
+  return createAccountReal(admin, req, username, email, clientPubkey)
 }
 
 export async function createAccountReal(
   admin: AdminInterface,
   req: NDKRpcRequest,
   username: string,
-  domain: string,
   email?: string,
   clientPubkey?: string
 ): Promise<void> {
@@ -74,27 +69,26 @@ export async function createAccountReal(
   scope.logReceived({
     clientPubkey,
     requestEventId: req.event.id,
-    userIdentifier: `${username}@${domain}`,
-    details: { username, domain, email }
+    userIdentifier: username,
+    details: { username, email }
   })
 
   try {
     log.admin(`[${req.id}] create_account request from ${clientPubkey?.slice(0, 16) || 'unknown'}...`)
-    log.admin(`[${req.id}] Creating account for ${username}@${domain}`)
+    log.admin(`[${req.id}] Creating account for ${username}`)
 
     try {
-      await validate(username, domain)
+      await validate(username)
     } catch (e: any) {
       if (e.message === 'username already exists') {
         log.admin('username already exists, implementing idempotency')
-        const keyName = `${username}@${domain}`
         const existingKey = await prisma.key.findFirst({
-          where: { keyName, status: 'ACTIVE' },
+          where: { keyName: username, status: 'ACTIVE' },
           select: { pubkey: true }
         })
         if (existingKey) {
           log.admin(`Found existing pubkey ${existingKey.pubkey} for ${username}`)
-          await grantPermissions(req, keyName, clientPubkey)
+          await grantPermissions(req, username, clientPubkey)
           log.admin('permissions re-granted for existing user')
           return admin.rpc.sendResponse(req.id, req.pubkey, existingKey.pubkey, KIND_ADMIN_RESPONSE)
         }
@@ -102,13 +96,12 @@ export async function createAccountReal(
       throw e
     }
 
-    const nip05 = `${username}@${domain}`
     const key = NDKPrivateKeySigner.generate()
     const generatedUser = await key.user()
 
-    log.admin(`Created user ${generatedUser.npub} for ${nip05}`)
+    log.admin(`Created user ${generatedUser.npub} for ${username}`)
 
-    const keyName = nip05
+    const keyName = username
     const privateKeyHex = key.privateKey!
     const nsec = hexToNsec(privateKeyHex)
 
@@ -154,7 +147,7 @@ export async function createAccountReal(
     return admin.rpc.sendResponse(req.id, req.pubkey, generatedUser.pubkey, KIND_ADMIN_RESPONSE)
   } catch (e: any) {
     log.admin(`error creating account: ${e.message}`)
-    scope.logError(e, { username, domain })
+    scope.logError(e, { username })
     return admin.rpc.sendResponse(req.id, req.pubkey, 'error', KIND_ADMIN_RESPONSE, e.message)
   }
 }

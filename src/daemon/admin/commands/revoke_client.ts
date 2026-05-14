@@ -12,7 +12,7 @@ import { checkpointService } from '../../../services/CheckpointService.js'
  * Called during logout flow to invalidate the client's signing session.
  *
  * Params: [keyName, userPubkey, clientPubkey?, correlationId?]
- * - keyName: The NIP-05 style key name (e.g., "username@verity.local")
+ * - keyName: The key identifier (e.g., "username")
  * - userPubkey: The hex pubkey of the user (for verification)
  * - clientPubkey: The hex pubkey of the client to revoke (optional - if undefined, revokes all clients)
  * - correlationId: Optional correlation ID for tracing across services
