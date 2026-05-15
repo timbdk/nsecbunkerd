@@ -1,5 +1,5 @@
 {
-  "name": "verity-event-signing-service",
+  "name": "verity-signing-service",
   "version": "0.10.5",
   "packageManager": "bun@1.3.13",
   "description": "Verity NIP-46 event signing service",
