@@ -1,6 +1,6 @@
 import { NDKPrivateKeySigner, NDKRpcRequest, NDKUser } from '@nostr-dev-kit/ndk'
-import { KIND_ADMIN_RESPONSE, RESERVED_USERNAMES } from 'verity-event-validation-module'
-import AdminInterface from '..'
+import { KIND_ADMIN_RESPONSE, RESERVED_USERNAMES, type CreateAccountInput } from 'verity-event-validation-module'
+import AdminInterface, { type ValidatedRpcRequest } from '../index.js'
 import { allowAllRequestsFromKey } from '../../lib/acl/index.js'
 import { publishUsernameEvent } from '../../lib/username-event.js'
 import prisma from '../../../db.js'
@@ -27,11 +27,7 @@ export async function validate(username: string) {
 
 
 
-async function validateUsername(username: string | undefined) {
-  if (!username || username.length === 0) {
-    username = Math.random().toString(36).substring(2, 15)
-  }
-
+async function validateUsername(username: string) {
   if (RESERVED_USERNAMES.has(username)) {
     throw new Error('username not available')
   }
@@ -39,14 +35,14 @@ async function validateUsername(username: string | undefined) {
   return username
 }
 
-export default async function createAccount(admin: AdminInterface, req: NDKRpcRequest) {
-  // params: [username, clientPubkey?, correlationId?]
-  let [username, clientPubkey, correlationId] = req.params as [string?, string?, string?]
+export default async function createAccount(admin: AdminInterface, req: ValidatedRpcRequest<CreateAccountInput>) {
+  const { username: rawUsername, clientPubkey, correlationId } = req.validatedParams
 
   log.admin(`[${correlationId?.slice(0, 8) || 'no-corr'}] create_account request from ${req.pubkey.slice(0, 16)}...`)
 
+  let username: string
   try {
-    username = await validateUsername(username)
+    username = await validateUsername(rawUsername)
   } catch (e: any) {
     log.admin(`[${correlationId?.slice(0, 8) || 'no-corr'}] create_account validation failed: ${e.message}`)
     admin.rpc.sendResponse(req.id, req.pubkey, 'error', KIND_ADMIN_RESPONSE, e.message)

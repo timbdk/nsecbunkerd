@@ -10,7 +10,14 @@ import NDK, {
   NDKNostrRpc
 } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
-import { KIND_ADMIN_COMMAND, KIND_ADMIN_RESPONSE } from 'verity-event-validation-module'
+import {
+  KIND_ADMIN_COMMAND, KIND_ADMIN_RESPONSE,
+  AdminCommandDefinition
+} from 'verity-event-validation-module'
+
+export interface ValidatedRpcRequest<T> extends NDKRpcRequest {
+  validatedParams: T
+}
 import { Key, Session } from '../run.js'
 import { allowAllRequestsFromKey } from '../lib/acl/index.js'
 import prisma from '../../db.js'
@@ -112,39 +119,44 @@ class AdminInterface {
         id: req.id?.substring(0, 16),
       })
 
+      // Validate and convert positional params to named object using EVM wire format
+      let validatedReq = req as ValidatedRpcRequest<any>
+      if (AdminCommandDefinition.rpcPayloads?.[req.method]?.fieldOrder) {
+        try {
+          const wire = AdminCommandDefinition.wire(req.method)
+          validatedReq.validatedParams = wire.fromPositional(req.params as (string | undefined)[])
+        } catch (e: any) {
+          log.admin(`⛔ Invalid params for ${req.method}: ${e.message}`)
+          return this.rpc.sendResponse(
+            req.id, req.pubkey, 'error', KIND_ADMIN_RESPONSE,
+            `Invalid params for ${req.method}: ${e.message}`
+          )
+        }
+      }
+
       switch (req.method) {
         case 'create_account':
-          await createAccount(this, req)
+          await createAccount(this, validatedReq)
           break
         case 'authorize_client':
-          await authorizeClient(this, req)
+          await authorizeClient(this, validatedReq)
           break
         case 'revoke_client':
-          await revokeClient(this, req)
+          await revokeClient(this, validatedReq)
           break
         case 'revoke_user':
-          await revokeUser(this, req)
+          await revokeUser(this, validatedReq)
           break
         case 'ping':
-          await ping(this, req)
+          await ping(this, validatedReq)
           break
         case 'rename_account': {
-          const currentConfig = await this.config()
-          const result = await renameAccount(currentConfig, req.params, req.pubkey, req.id)
-
-          checkpointService.broadcast('signer.command.completed', {
-            method: 'rename_account',
-            id: req.id?.substring(0, 16),
-          })
-
-          checkpointService.broadcast('signer.response.sent', {
-            method: 'rename_account',
-            kind: KIND_ADMIN_RESPONSE,
-          })
-
-          // Admin responses use KIND_ADMIN_RESPONSE from event-validation-module (SSOT)
-          return this.rpc.sendResponse(req.id, req.pubkey, result, KIND_ADMIN_RESPONSE)
+          await renameAccount(this, validatedReq)
+          break
         }
+
+
+
 
         default:
           log.admin(`Unknown method ${req.method}`)
@@ -163,7 +175,12 @@ class AdminInterface {
     if (registrarNpub) {
       const registrarPubkey = new NDKUser({ npub: registrarNpub }).pubkey
       if (req.pubkey === registrarPubkey) {
-        const allowedMethods = ['create_account', 'rename_account', 'authorize_client', 'revoke_user', 'revoke_client']
+        const payloads = AdminCommandDefinition.describe().rpcPayloads
+        const allowedMethods = payloads 
+          ? Object.entries(payloads)
+              .filter(([, def]) => def.status === 'implemented')
+              .map(([name]) => name)
+          : []
         if (allowedMethods.includes(req.method)) {
           log.admin(`✅ Allowing ${req.method} from Restricted Registrar: ${registrarNpub}`)
           return

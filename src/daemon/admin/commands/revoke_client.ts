@@ -1,6 +1,6 @@
 import { NDKRpcRequest } from '@nostr-dev-kit/ndk'
-import { KIND_ADMIN_RESPONSE } from 'verity-event-validation-module'
-import AdminInterface from '../index.js'
+import { KIND_ADMIN_RESPONSE, type RevokeClientInput } from 'verity-event-validation-module'
+import AdminInterface, { type ValidatedRpcRequest } from '../index.js'
 import { rejectAllRequestsFromKey } from '../../lib/acl/index.js'
 import prisma from '../../../db.js'
 import { log } from '../../../lib/logger.js'
@@ -17,14 +17,9 @@ import { checkpointService } from '../../../services/CheckpointService.js'
  * - clientPubkey: The hex pubkey of the client to revoke (optional - if undefined, revokes all clients)
  * - correlationId: Optional correlation ID for tracing across services
  */
-export default async function revokeClient(admin: AdminInterface, req: NDKRpcRequest) {
-  const [keyName, userPubkey, clientPubkey, correlationId] = req.params as [string, string, string | undefined, string?]
+export default async function revokeClient(admin: AdminInterface, req: ValidatedRpcRequest<RevokeClientInput>) {
+  const { keyName, userPubkey, clientPubkey, correlationId } = req.validatedParams
   const corrPrefix = `[${correlationId?.slice(0, 8) || 'no-corr'}]`
-
-  if (!keyName) {
-    log.admin(`${corrPrefix} Invalid params: keyName required`)
-    return admin.rpc.sendResponse(req.id, req.pubkey, 'error', KIND_ADMIN_RESPONSE, 'Invalid params: keyName required')
-  }
 
   log.admin(`${corrPrefix} Revoking ${clientPubkey ? 'client ' + clientPubkey.slice(0, 16) + '...' : 'ALL clients'} from key ${keyName}`)
 
@@ -67,7 +62,11 @@ export default async function revokeClient(admin: AdminInterface, req: NDKRpcReq
       kind: KIND_ADMIN_RESPONSE,
     })
 
-    return admin.rpc.sendResponse(req.id, req.pubkey, 'revoked', KIND_ADMIN_RESPONSE)
+    // Include identity attestation tags so the relay can clear the device → user mapping
+    const attestationTags: string[][] = []
+    if (clientPubkey) attestationTags.push(['client', clientPubkey])
+    if (userPubkey) attestationTags.push(['user', userPubkey])
+    return admin.rpc.sendResponse(req.id, req.pubkey, 'revoked', KIND_ADMIN_RESPONSE, undefined, attestationTags)
   } catch (e: any) {
     log.admin(`Error revoking client: ${e.message}`)
     return admin.rpc.sendResponse(req.id, req.pubkey, 'error', KIND_ADMIN_RESPONSE, e.message)

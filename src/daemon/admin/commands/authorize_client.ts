@@ -1,6 +1,6 @@
 import { NDKRpcRequest } from '@nostr-dev-kit/ndk'
-import { KIND_ADMIN_RESPONSE } from 'verity-event-validation-module'
-import AdminInterface from '../index.js'
+import { KIND_ADMIN_RESPONSE, type AuthorizeClientInput } from 'verity-event-validation-module'
+import AdminInterface, { type ValidatedRpcRequest } from '../index.js'
 import { allowAllRequestsFromKey } from '../../lib/acl/index.js'
 import prisma from '../../../db.js'
 import { checkpointService } from '../../../services/CheckpointService.js'
@@ -20,26 +20,12 @@ import { log } from '../../../lib/logger.js'
  * - clientPubkey: The hex pubkey of the client's ephemeral keypair (to authorize)
  * - correlationId: Optional correlation ID for tracing across services
  */
-export default async function authorizeClient(admin: AdminInterface, req: NDKRpcRequest) {
-  const [keyName, userPubkey, clientPubkey, correlationId] = req.params as [string, string, string, string?]
+export default async function authorizeClient(admin: AdminInterface, req: ValidatedRpcRequest<AuthorizeClientInput>) {
+  const { keyName, userPubkey, clientPubkey, correlationId } = req.validatedParams
   const corrPrefix = `[${correlationId?.slice(0, 8) || 'no-corr'}]`
 
   const { auditService } = await import('../../../services/AuditService.js')
   const scope = auditService.createScope(req.id, 'authorize_client')
-
-  if (!keyName || !userPubkey || !clientPubkey) {
-    log.admin(
-      `${corrPrefix} Invalid params: keyName=${keyName}, userPubkey=${userPubkey?.slice(0, 16)}, clientPubkey=${clientPubkey?.slice(0, 16)}`
-    )
-    scope.logError(new Error('Invalid params'), { keyName, userPubkey, clientPubkey })
-    return admin.rpc.sendResponse(
-      req.id,
-      req.pubkey,
-      'error',
-      KIND_ADMIN_RESPONSE,
-      'Invalid params: keyName, userPubkey, and clientPubkey required'
-    )
-  }
 
   scope.logReceived({
     clientPubkey,
@@ -102,7 +88,9 @@ export default async function authorizeClient(admin: AdminInterface, req: NDKRpc
       kind: KIND_ADMIN_RESPONSE,
     })
 
-    return admin.rpc.sendResponse(req.id, req.pubkey, 'authorized', KIND_ADMIN_RESPONSE)
+    // Include identity attestation tags so the relay can map device → user
+    const attestationTags = [['client', clientPubkey], ['user', key.pubkey]]
+    return admin.rpc.sendResponse(req.id, req.pubkey, 'authorized', KIND_ADMIN_RESPONSE, undefined, attestationTags)
   } catch (e: any) {
     log.admin(`Error authorizing client: ${e.message}`)
     scope.logError(e, { keyName, clientPubkey })

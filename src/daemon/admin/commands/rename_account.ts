@@ -1,17 +1,14 @@
 import { NDKPrivateKeySigner } from '@nostr-dev-kit/ndk'
-import { IConfig, getCurrentConfig } from '../../../config/index.js'
+import { KIND_ADMIN_RESPONSE, type RenameAccountInput } from 'verity-event-validation-module'
+import AdminInterface, { type ValidatedRpcRequest } from '../index.js'
+import { IConfig } from '../../../config/index.js'
 import { publishUsernameEvent } from '../../lib/username-event.js'
 import prisma from '../../../db.js'
 import { log, logError } from '../../../lib/logger.js'
 import { retrieveKey } from '../../../services/KeyService.js'
+import { checkpointService } from '../../../services/CheckpointService.js'
 
-export async function validate(currentConfig: IConfig, pubkey: string, newUsername: string) {
-  if (!pubkey) {
-    throw new Error('pubkey is required')
-  }
-  if (!newUsername) {
-    throw new Error('newUsername is required')
-  }
+export async function validateRelays(currentConfig: IConfig) {
 
   // Determine relay URLs
   let relayUrls = currentConfig.nostr.relays
@@ -27,17 +24,13 @@ export async function validate(currentConfig: IConfig, pubkey: string, newUserna
 }
 
 export default async function renameAccount(
-  currentConfig: IConfig,
-  params: string[],
-  remotePubkey: string,
-  eventId: string
-): Promise<string> {
-  // Expected params: [pubkey, newUsername, correlationId?]
-  const pubkey = params[0]
-  const newUsername = params[1]
-  const correlationId = params[2] || 'none'
+  admin: AdminInterface,
+  req: ValidatedRpcRequest<RenameAccountInput>
+) {
+  const currentConfig = await admin.config()
+  const { userPubkey: pubkey, newUsername, correlationId } = req.validatedParams
 
-  const { relayUrls } = await validate(currentConfig, pubkey, newUsername)
+  const { relayUrls } = await validateRelays(currentConfig)
 
   log.admin(`rename_account request received: pubkey=${pubkey}, username=${newUsername}`)
 
@@ -74,5 +67,15 @@ export default async function renameAccount(
 
   log.admin(`rename_account completed for pubkey=${pubkey}, username=${newUsername}`)
 
-  return `Account renamed to ${newUsername}`
+  checkpointService.broadcast('signer.command.completed', {
+    method: 'rename_account',
+    id: req.id?.substring(0, 16),
+  })
+
+  checkpointService.broadcast('signer.response.sent', {
+    method: 'rename_account',
+    kind: KIND_ADMIN_RESPONSE,
+  })
+
+  return admin.rpc.sendResponse(req.id, req.pubkey, `Account renamed to ${newUsername}`, KIND_ADMIN_RESPONSE)
 }
