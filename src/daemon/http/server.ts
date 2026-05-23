@@ -78,6 +78,8 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
             await storeKey(keyName, privateKeyHex, pubkey)
             checkpointService.broadcast('signer.testing.key_stored', { keyName })
 
+            const testSigner = new NDKPrivateKeySigner(privateKeyHex)
+
             if (clientPubkey) {
               await allowAllRequestsFromKey(clientPubkey, keyName, 'connect', undefined, 'test-client')
               await allowAllRequestsFromKey(clientPubkey, keyName, 'sign_event', undefined, 'test-client', { kind: null })
@@ -88,11 +90,41 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
               await allowAllRequestsFromKey(clientPubkey, keyName, 'ping', undefined, 'test-client')
               log.http(`🧪 Testing: authorized client ${clientPubkey.slice(0, 16)}... for key ${keyName}`)
               checkpointService.broadcast('signer.testing.client_authorized', { keyName, clientPubkey })
+
+              // Publish Kind 24135 identity attestation so the relay can resolve
+              // devicePubkey → userPubkey without the Kind 24133 fallback.
+              //
+              // This mirrors the production authorize_client flow:
+              //   - 'client' tag → device key being attested
+              //   - 'user' tag   → user identity being attested
+              // The relay reads these tags and calls resolveIdentity().
+              const attestationPayload = JSON.stringify({ id: 'short-circuit', result: 'attestation' })
+              const user = await testSigner.user()
+              const encryptedAttestation = await testSigner.encrypt(user, attestationPayload, 'nip44')
+
+              const attestationEvent = new NDKEvent(daemon.ndk, {
+                kind: 24135,
+                content: encryptedAttestation,
+                created_at: createdAt || Math.floor(Date.now() / 1000),
+                tags: [
+                  ['p', pubkey],
+                  ['policy', 'allow', 'user', pubkey],
+                  ['client', clientPubkey],
+                  ['user', pubkey]
+                ],
+                pubkey: pubkey
+              } as any)
+
+              await attestationEvent.sign(testSigner)
+              await attestationEvent.publish()
+              checkpointService.broadcast('signer.testing.identity_attested', {
+                devicePubkey: clientPubkey.substring(0, 16),
+                userPubkey: pubkey.substring(0, 16)
+              })
             }
 
             const { publishUsernameEvent } = await import('../lib/username-event.js')
             const usernameFromKeyName = keyName.split('@')[0]
-            const testSigner = new NDKPrivateKeySigner(privateKeyHex)
             await publishUsernameEvent(testSigner, usernameFromKeyName, pubkey, daemon.config.nostr.relays, createdAt)
 
             daemon.loadNsec(keyName, privateKeyHex)

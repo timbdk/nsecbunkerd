@@ -86,7 +86,7 @@ export async function publishUsernameEvent(
     // Event identity: signed by user's own key (event.pubkey = user's pubkey)
     const draft = UsernameRegistrationDefinition.create({
       variant: 'claim',
-      tags: { u: username }
+      tags: { u: username, policy: ['allow', 'public'] }
     })
     const event = await draft.toNDKEvent(ndk)
     event.pubkey = pubkey
