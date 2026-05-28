@@ -1,5 +1,5 @@
 import NDK, { NDKPrivateKeySigner, NDKRelayAuthPolicies } from '@nostr-dev-kit/ndk'
-import UsernameRegistrationDefinition from 'verity-event-validation-module/kinds/kind-415-username-registration'
+import { Kind415UsernameRegistration } from 'verity-event-data-module'
 import { log } from '../../lib/logger.js'
 import { checkpointService } from '../../services/CheckpointService.js'
 
@@ -82,17 +82,11 @@ export async function publishUsernameEvent(
       return
     }
 
-    // Construct using the EVM builder (validates at creation time)
+    // Construct via Level 2 Builder, using build() callback for the dominant claim case.
     // Event identity: signed by user's own key (event.pubkey = user's pubkey)
-    const draft = UsernameRegistrationDefinition.create({
-      variant: 'claim',
-      tags: { u: username, policy: ['allow', 'public'] }
-    })
-    const event = await draft.toNDKEvent(ndk)
-    event.pubkey = pubkey
-    if (createdAt) event.created_at = createdAt
-
-    await event.sign(userSigner)
+    let builder = Kind415UsernameRegistration.build(username)
+    if (createdAt) builder = builder.createdAt(createdAt)
+    const event = await builder.toSignedNDKEvent({ ndk, signer: userSigner, pubkey })
     const published = await event.publish()
 
     if (published.size === 0) {
@@ -130,7 +124,7 @@ async function queryExistingUsernameEvent(
     let found = false
 
     const filter = {
-      ...UsernameRegistrationDefinition.filters.byUsername(username),
+      ...Kind415UsernameRegistration.filters.byUsername(username),
       authors: [pubkey]
     }
 

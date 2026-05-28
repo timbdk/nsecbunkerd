@@ -1,5 +1,5 @@
 import { NDKPrivateKeySigner } from '@nostr-dev-kit/ndk'
-import { KIND_ADMIN_RESPONSE, type RenameAccountInput } from 'verity-event-validation-module'
+import { KIND_ADMIN_RESPONSE, type RenameAccountInput } from 'verity-event-data-module'
 import AdminInterface, { type ValidatedRpcRequest } from '../index.js'
 import { IConfig } from '../../../config/index.js'
 import { publishUsernameEvent } from '../../lib/username-event.js'

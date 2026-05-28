@@ -1,5 +1,5 @@
 import { NDKRpcRequest } from '@nostr-dev-kit/ndk'
-import { KIND_ADMIN_RESPONSE, type RevokeClientInput } from 'verity-event-validation-module'
+import { KIND_ADMIN_RESPONSE, type RevokeClientInput } from 'verity-event-data-module'
 import AdminInterface, { type ValidatedRpcRequest } from '../index.js'
 import { rejectAllRequestsFromKey } from '../../lib/acl/index.js'
 import prisma from '../../../db.js'

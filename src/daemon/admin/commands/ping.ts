@@ -1,4 +1,4 @@
-import { KIND_ADMIN_RESPONSE } from 'verity-event-validation-module'
+import { KIND_ADMIN_RESPONSE } from 'verity-event-data-module'
 import AdminInterface, { type ValidatedRpcRequest } from '../index.js'
 
 export default async function ping(admin: AdminInterface, req: ValidatedRpcRequest<any>) {

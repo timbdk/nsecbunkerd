@@ -1,5 +1,5 @@
 import { NDKPrivateKeySigner, NDKRpcRequest, NDKUser } from '@nostr-dev-kit/ndk'
-import { KIND_ADMIN_RESPONSE, RESERVED_USERNAMES, type CreateAccountInput } from 'verity-event-validation-module'
+import { KIND_ADMIN_RESPONSE, RESERVED_USERNAMES, type CreateAccountInput } from 'verity-event-data-module'
 import AdminInterface, { type ValidatedRpcRequest } from '../index.js'
 import { allowAllRequestsFromKey } from '../../lib/acl/index.js'
 import { publishUsernameEvent } from '../../lib/username-event.js'

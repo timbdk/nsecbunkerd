@@ -13,7 +13,7 @@ import { nip19 } from 'nostr-tools'
 import {
   KIND_ADMIN_COMMAND, KIND_ADMIN_RESPONSE,
   AdminCommandDefinition
-} from 'verity-event-validation-module'
+} from 'verity-event-data-module'
 
 export interface ValidatedRpcRequest<T> extends NDKRpcRequest {
   validatedParams: T
@@ -119,7 +119,7 @@ class AdminInterface {
         id: req.id?.substring(0, 16),
       })
 
-      // Validate and convert positional params to named object using EVM wire format
+      // Validate and convert positional params to named object using EDM wire format
       let validatedReq = req as ValidatedRpcRequest<any>
       if (AdminCommandDefinition.rpcPayloads?.[req.method]?.fieldOrder) {
         try {
@@ -160,12 +160,12 @@ class AdminInterface {
 
         default:
           log.admin(`Unknown method ${req.method}`)
-          // Admin responses use KIND_ADMIN_RESPONSE from event-validation-module (SSOT)
+          // Admin responses use KIND_ADMIN_RESPONSE from event-data-module (SSOT)
           return this.rpc.sendResponse(req.id, req.pubkey, JSON.stringify(['error', `Unknown method ${req.method}`]), KIND_ADMIN_RESPONSE)
       }
     } catch (err: any) {
       log.admin(`Error handling request ${req.method}: ${err?.message ?? err}`, req.params)
-      // Admin responses use KIND_ADMIN_RESPONSE from event-validation-module (SSOT)
+      // Admin responses use KIND_ADMIN_RESPONSE from event-data-module (SSOT)
       return this.rpc.sendResponse(req.id, req.pubkey, 'error', KIND_ADMIN_RESPONSE, err?.message)
     }
   }
