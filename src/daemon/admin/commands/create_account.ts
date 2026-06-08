@@ -5,7 +5,7 @@ import { allowAllRequestsFromKey } from '../../lib/acl/index.js'
 import { publishUsernameEvent } from '../../lib/username-event.js'
 import prisma from '../../../db.js'
 import { log } from '../../../lib/logger.js'
-import { encryptPrivateKey, storeKey, hexToNsec, markKeyBackedUp } from '../../../services/KeyService.js'
+import { encryptPrivateKey, storeKey, hexToNsec, markKeyBackedUp, retrieveKey } from '../../../services/KeyService.js'
 import { backupKey } from '../../../services/BackupService.js'
 import { checkpointService } from '../../../services/CheckpointService.js'
 
@@ -36,7 +36,7 @@ async function validateUsername(username: string) {
 }
 
 export default async function createAccount(admin: AdminInterface, req: ValidatedRpcRequest<CreateAccountInput>) {
-  const { username: rawUsername, clientPubkey, correlationId } = req.validatedParams
+  const { username: rawUsername, clientPubkey, correlationId, inviterPubkey } = req.validatedParams
 
   log.admin(`[${correlationId?.slice(0, 8) || 'no-corr'}] create_account request from ${req.pubkey.slice(0, 16)}...`)
 
@@ -49,14 +49,15 @@ export default async function createAccount(admin: AdminInterface, req: Validate
     return
   }
 
-  return createAccountReal(admin, req, username, clientPubkey)
+  return createAccountReal(admin, req, username, clientPubkey, inviterPubkey)
 }
 
 export async function createAccountReal(
   admin: AdminInterface,
   req: NDKRpcRequest,
   username: string,
-  clientPubkey?: string
+  clientPubkey?: string,
+  inviterPubkey?: string
 ): Promise<void> {
   const { auditService } = await import('../../../services/AuditService.js')
   const scope = auditService.createScope(req.id, 'create_account')
@@ -85,6 +86,9 @@ export async function createAccountReal(
           log.admin(`Found existing pubkey ${existingKey.pubkey} for ${username}`)
           await grantPermissions(req, username, clientPubkey)
           log.admin('permissions re-granted for existing user')
+
+          await publishInvitedEventIfNeeded(inviterPubkey, existingKey.pubkey, admin, req.id)
+
           return admin.rpc.sendResponse(req.id, req.pubkey, existingKey.pubkey, KIND_ADMIN_RESPONSE)
         }
       }
@@ -119,6 +123,8 @@ export async function createAccountReal(
     await publishUsernameEvent(key, username, generatedUser.pubkey, currentConfig.nostr.relays)
     log.admin(`[${req.id}] Kind 415 published for ${username}`)
 
+    await publishInvitedEventIfNeeded(inviterPubkey, generatedUser.pubkey, admin, req.id)
+
     await grantPermissions(req, keyName, clientPubkey)
 
     checkpointService.broadcast('signer.command.completed', {
@@ -145,6 +151,34 @@ export async function createAccountReal(
     scope.logError(e, { username })
     return admin.rpc.sendResponse(req.id, req.pubkey, 'error', KIND_ADMIN_RESPONSE, e.message)
   }
+}
+
+async function publishInvitedEventIfNeeded(
+  inviterPubkey: string | undefined,
+  inviteePubkey: string,
+  admin: AdminInterface,
+  correlationId?: string
+): Promise<void> {
+  if (!inviterPubkey) return
+
+  const prefix = correlationId ? `[${correlationId}]` : ''
+  log.admin(`${prefix} Resolving inviter private key for pubkey ${inviterPubkey}`)
+
+  const inviterKeyRecord = await prisma.key.findFirst({
+    where: { pubkey: inviterPubkey, status: 'ACTIVE' }
+  })
+  if (!inviterKeyRecord) {
+    throw new Error(`Inviter public key not found or not active: ${inviterPubkey}`)
+  }
+  const inviterPrivateKeyHex = await retrieveKey(inviterKeyRecord.keyName)
+  if (!inviterPrivateKeyHex) {
+    throw new Error(`Failed to decrypt inviter private key for ${inviterKeyRecord.keyName}`)
+  }
+  const inviterSigner = new NDKPrivateKeySigner(inviterPrivateKeyHex)
+  const currentConfig = await admin.config()
+  const { publishInvitedEvent } = await import('../../lib/invited-event.js')
+  await publishInvitedEvent(inviterSigner, inviteePubkey, currentConfig.nostr.relays)
+  log.admin(`${prefix} Kind 723 published for invitee ${inviteePubkey.substring(0, 16)}... by inviter ${inviterKeyRecord.keyName}`)
 }
 
 async function grantPermissions(req: NDKRpcRequest, keyName: string, clientPubkey?: string) {
