@@ -57,6 +57,7 @@ class AdminInterface {
     this.npubs = opts.npubs || []
     this.ndk = new NDK({
       explicitRelayUrls: opts.adminRelays,
+      enableOutboxModel: false,
       signer: new NDKPrivateKeySigner(opts.key)
     })
     // Enable NIP-42 auto-auth for admin relay connections
