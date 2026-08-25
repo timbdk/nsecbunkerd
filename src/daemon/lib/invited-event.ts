@@ -10,48 +10,58 @@ const RELAY_QUERY_TIMEOUT_MS = 10_000
  * Publish a Kind 723 invited event (idempotent).
  * Mapped inviter -> invitee, signed by the inviter's own key.
  */
+const NDK_RELAY_STATUS_AUTHENTICATED = 8
+
 export async function publishInvitedEvent(
   inviterSigner: NDKPrivateKeySigner,
   inviteePubkey: string,
-  relayUrls: string[]
+  relayUrls: string[],
+  createdAt?: number,
+  kid?: string,
+  ndkInstance?: NDK
 ): Promise<void> {
   if (!relayUrls || relayUrls.length === 0) {
     throw new Error('No relay URLs configured — cannot publish Kind 723')
   }
 
-  const masterKey = process.env.SIGNER_MASTER_KEY
-  if (!masterKey) {
-    throw new Error('SIGNER_MASTER_KEY not set — cannot authenticate with relay')
-  }
-  const authSigner = new NDKPrivateKeySigner(masterKey)
+  let ndk: NDK
+  if (ndkInstance) {
+    ndk = ndkInstance
+  } else {
+    const masterKey = process.env.SIGNER_MASTER_KEY
+    if (!masterKey) {
+      throw new Error('SIGNER_MASTER_KEY not set — cannot authenticate with relay')
+    }
+    const authSigner = new NDKPrivateKeySigner(masterKey)
 
-  const ndk = new NDK({
-    explicitRelayUrls: relayUrls,
-    signer: authSigner,
-    enableOutboxModel: false,
-    autoDeviceDiscovery: false,
-    autoFetchUserMutelist: false,
-    cacheAdapter: undefined
-  })
+    ndk = new NDK({
+      explicitRelayUrls: relayUrls,
+      signer: authSigner,
+      enableOutboxModel: false,
+      autoDeviceDiscovery: false,
+      autoFetchUserMutelist: false,
+      cacheAdapter: undefined
+    })
 
-  ndk.relayAuthDefaultPolicy = NDKRelayAuthPolicies.signIn({ ndk })
+    ndk.relayAuthDefaultPolicy = NDKRelayAuthPolicies.signIn({ ndk })
 
-  await ndk.connect(5000)
+    await ndk.connect(5000)
 
-  const relay = Array.from(ndk.pool.relays.values())[0] as any
-  if (relay) {
-    let authAttempts = 0
-    while (relay.status < 8 && authAttempts < 50) {
-      await new Promise(resolve => setTimeout(resolve, 100))
-      authAttempts++
+    const relay = Array.from(ndk.pool.relays.values())[0] as any
+    if (relay) {
+      let authAttempts = 0
+      while (relay.status < NDK_RELAY_STATUS_AUTHENTICATED && authAttempts < 50) {
+        await new Promise(resolve => setTimeout(resolve, 100))
+        authAttempts++
+      }
     }
   }
 
   try {
     const inviterPubkey = await inviterSigner.user().then(u => u.pubkey)
     const inviterPubkeyBytes = Buffer.from(inviterPubkey, 'hex')
-    const key = 'secp256k1-schnorr:' + inviterPubkeyBytes.toString('base64')
-    const uid = identityIdFromPublicKey(key)
+    const key = kid ? undefined : ('secp256k1-schnorr:' + inviterPubkeyBytes.toString('base64'))
+    const uid = identityIdFromPublicKey(inviterPubkey)
 
     // Idempotency: check if Kind 723 already exists for this inviter and invitee
     const existing = await queryExistingInvitedEvent(ndk, uid, inviteePubkey)
@@ -65,11 +75,14 @@ export async function publishInvitedEvent(
       return
     }
 
-    const builder = Kind723Invited.build({ inviteePubkey })
+    let builder = Kind723Invited.build({ inviteePubkey })
+    if (kid) builder = builder.setKid(kid)
+
     const event = await builder.toSignedNDKEvent({
       ndk,
       signer: inviterSigner,
       uid,
+      kid,
       key
     })
     const published = await event.publish()
@@ -86,7 +99,7 @@ export async function publishInvitedEvent(
       skipped: false
     })
   } finally {
-    if (ndk.pool) {
+    if (!ndkInstance && ndk.pool) {
       ndk.pool.relays.forEach(relay => relay.disconnect())
     }
   }

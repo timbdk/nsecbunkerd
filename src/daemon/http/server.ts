@@ -105,7 +105,7 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
 
               const userPubkeyBytes = Buffer.from(pubkey, 'hex')
               const keyField = 'secp256k1-schnorr:' + userPubkeyBytes.toString('base64')
-              const uid = identityIdFromPublicKey(keyField)
+              const uid = identityIdFromPublicKey(pubkey)
 
               const attestationEvent = new NDKEvent(daemon.ndk, {
                 kind: 24135,
@@ -129,16 +129,44 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
               })
             }
 
+            const { publishGenesisEntry } = await import('../lib/keychain-event.js')
+            const daemonServiceEntryId = daemon.platformServiceEntryId
+            if (!daemonServiceEntryId) {
+              throw new Error('Signer daemon has no verified platformServiceEntryId')
+            }
+            const genesisEntryId = await publishGenesisEntry(
+              testSigner,
+              pubkey,
+              daemon.config.nostr.relays,
+              daemonServiceEntryId,
+              createdAt,
+              daemon.ndk
+            )
+
             const { publishUsernameEvent } = await import('../lib/username-event.js')
             const usernameFromKeyName = keyName.split('@')[0]
-            await publishUsernameEvent(testSigner, usernameFromKeyName, pubkey, daemon.config.nostr.relays, createdAt)
+            await publishUsernameEvent(
+              testSigner,
+              usernameFromKeyName,
+              pubkey,
+              daemon.config.nostr.relays,
+              createdAt,
+              genesisEntryId,
+              daemon.ndk
+            )
 
             daemon.loadNsec(keyName, privateKeyHex)
 
-            log.http(`🧪 Testing: registered key ${keyName}`)
+            log.http(`🧪 Testing: registered key ${keyName} (genesis: ${genesisEntryId})`)
             checkpointService.broadcast('signer.testing.register.completed', { keyName })
 
-            return Response.json({ success: true, keyName, pubkey, clientAuthorized: !!clientPubkey }, { status: 201, headers })
+            return Response.json({
+              success: true,
+              keyName,
+              pubkey,
+              genesisEntryId,
+              clientAuthorized: !!clientPubkey
+            }, { status: 201, headers })
           } catch (e: any) {
             if (e.code === 'P2002') return Response.json({ error: 'Key already exists' }, { status: 409, headers })
             logError('http', `Testing register error:`, e)

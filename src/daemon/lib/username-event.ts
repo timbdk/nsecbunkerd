@@ -1,4 +1,4 @@
-import NDK, { NDKPrivateKeySigner, NDKRelayAuthPolicies } from '@nostr-dev-kit/ndk'
+import NDK, { NDKPrivateKeySigner, NDKRelayAuthPolicies, NDKRelaySet } from '@nostr-dev-kit/ndk'
 import { Kind415UsernameRegistration, identityIdFromPublicKey } from 'verity-event-data-module'
 import { log } from '../../lib/logger.js'
 import { checkpointService } from '../../services/CheckpointService.js'
@@ -22,55 +22,61 @@ import { checkpointService } from '../../services/CheckpointService.js'
  * 4. If not found → sign with user's key and publish
  * 5. If relay unreachable → throw (pg-boss will retry the full job)
  */
+const NDK_RELAY_STATUS_AUTHENTICATED = 8
+
 export async function publishUsernameEvent(
   userSigner: NDKPrivateKeySigner,
   username: string,
   pubkey: string,
   relayUrls: string[],
-  createdAt?: number
+  createdAt?: number,
+  kid?: string,
+  ndkInstance?: NDK
 ): Promise<void> {
   if (!relayUrls || relayUrls.length === 0) {
     throw new Error('No relay URLs configured — cannot publish Kind 415')
   }
 
-  // Use SIGNER_MASTER_KEY for NIP-42 connection authentication.
-  // This key is validated at daemon startup (run.ts) and is always present.
-  const masterKey = process.env.SIGNER_MASTER_KEY
-  if (!masterKey) {
-    throw new Error('SIGNER_MASTER_KEY not set — cannot authenticate with relay')
-  }
-  const authSigner = new NDKPrivateKeySigner(masterKey)
-
-  const ndk = new NDK({
-    explicitRelayUrls: relayUrls,
-    signer: authSigner, // Connection identity: trusted signer for NIP-42
-    enableOutboxModel: false,
-    autoDeviceDiscovery: false,
-    autoFetchUserMutelist: false,
-    cacheAdapter: undefined
-  })
-
-  // Enable automatic NIP-42 AUTH response
-  ndk.relayAuthDefaultPolicy = NDKRelayAuthPolicies.signIn({ ndk })
-
-  await ndk.connect(5000)
-
-  // Wait for relay authentication to complete before any operations.
-  // NDK status: CONNECTED=5, AUTH_REQUESTED=6, AUTHENTICATING=7, AUTHENTICATED=8
-  const relay = Array.from(ndk.pool.relays.values())[0] as any
-  if (relay) {
-    let authAttempts = 0
-    while (relay.status < 8 && authAttempts < 50) {
-      await new Promise(resolve => setTimeout(resolve, 100))
-      authAttempts++
+  let ndk: NDK
+  if (ndkInstance) {
+    ndk = ndkInstance
+  } else {
+    // Use SIGNER_MASTER_KEY for NIP-42 connection authentication.
+    const masterKey = process.env.SIGNER_MASTER_KEY
+    if (!masterKey) {
+      throw new Error('SIGNER_MASTER_KEY not set — cannot authenticate with relay')
     }
-    if (relay.status < 8) {
-      log.admin(`Warning: relay auth not confirmed (status: ${relay.status}) for Kind 415 publish`)
+    const authSigner = new NDKPrivateKeySigner(masterKey)
+
+    ndk = new NDK({
+      explicitRelayUrls: relayUrls,
+      signer: authSigner, // Connection identity: trusted signer for NIP-42
+      enableOutboxModel: false,
+      autoDeviceDiscovery: false,
+      autoFetchUserMutelist: false,
+      cacheAdapter: undefined
+    })
+
+    // Enable automatic NIP-42 AUTH response
+    ndk.relayAuthDefaultPolicy = NDKRelayAuthPolicies.signIn({ ndk })
+
+    await ndk.connect(5000)
+
+    const relay = Array.from(ndk.pool.relays.values())[0] as any
+    if (relay) {
+      let authAttempts = 0
+      while (relay.status < NDK_RELAY_STATUS_AUTHENTICATED && authAttempts < 50) {
+        await new Promise(resolve => setTimeout(resolve, 100))
+        authAttempts++
+      }
+      if (relay.status < NDK_RELAY_STATUS_AUTHENTICATED) {
+        log.admin(`Warning: relay auth not confirmed (status: ${relay.status}) for Kind 415 publish`)
+      }
     }
   }
 
   try {
-    const key = 'secp256k1-schnorr:' + Buffer.from(pubkey, 'hex').toString('base64')
+    const key = kid ? undefined : ('secp256k1-schnorr:' + Buffer.from(pubkey, 'hex').toString('base64'))
     const uid = identityIdFromPublicKey(pubkey)
 
     // Idempotency: check if Kind 415 already exists for this uid + username
@@ -89,13 +95,25 @@ export async function publishUsernameEvent(
     // Event identity: signed by user's own key
     let builder = Kind415UsernameRegistration.build(username)
     if (createdAt) builder = builder.createdAt(createdAt)
+    if (kid) builder = builder.setKid(kid)
+
     const event = await builder.toSignedNDKEvent({
       ndk,
       signer: userSigner,
       uid,
+      kid,
       key
     })
-    const published = await event.publish()
+    event.on('relay:publish:failed', (relay: any, err: any) => {
+      log.admin(`❌ Kind 415 publish failed on relay ${relay?.url}: ${err?.message || err}`)
+    })
+    event.on('relay:published', (relay: any) => {
+      log.admin(`✅ Kind 415 published on relay ${relay?.url}`)
+    })
+
+    log.admin(`Publishing Kind 415 for ${username} (id: ${event.id}, kid: ${event.kid}, uid: ${event.uid})`)
+    const relaySet = NDKRelaySet.fromRelayUrls(relayUrls, ndk)
+    const published = await event.publish(relaySet)
 
     if (published.size === 0) {
       throw new Error(`Not enough relays received the event (0 published, ${relayUrls.length} required)`)
@@ -109,7 +127,7 @@ export async function publishUsernameEvent(
       skipped: false
     })
   } finally {
-    if (ndk.pool) {
+    if (!ndkInstance && ndk.pool) {
       ndk.pool.relays.forEach(relay => relay.disconnect())
     }
   }
@@ -124,27 +142,11 @@ async function queryExistingUsernameEvent(
   uid: string,
   username: string
 ): Promise<boolean> {
-  return new Promise<boolean>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error('Timeout querying relay for existing Kind 415'))
-    }, 10000)
+  const filter = {
+    ...Kind415UsernameRegistration.filters.byUsername(username),
+    authors: [uid]
+  }
 
-    let found = false
-
-    const filter = {
-      ...Kind415UsernameRegistration.filters.byUsername(username),
-      authors: [uid]
-    }
-
-    const sub = ndk.subscribe(
-      filter,
-      { closeOnEose: true }
-    )
-
-    sub.on('event', () => { found = true })
-    sub.on('eose', () => {
-      clearTimeout(timeout)
-      resolve(found)
-    })
-  })
+  const events = await ndk.fetchEvents(filter as any)
+  return events.size > 0
 }

@@ -1,8 +1,9 @@
 import { NDKPrivateKeySigner, NDKRpcRequest, NDKUser } from '@nostr-dev-kit/ndk'
-import { KIND_ADMIN_RESPONSE, RESERVED_USERNAMES, type CreateAccountInput } from 'verity-event-data-module'
+import { KIND_ADMIN_RESPONSE, RESERVED_USERNAMES, identityIdFromPublicKey, type CreateAccountInput } from 'verity-event-data-module'
 import AdminInterface, { type ValidatedRpcRequest } from '../index.js'
 import { allowAllRequestsFromKey } from '../../lib/acl/index.js'
 import { publishUsernameEvent } from '../../lib/username-event.js'
+import { queryCurrentIdentityEntry } from '../../lib/keychain-event.js'
 import prisma from '../../../db.js'
 import { log } from '../../../lib/logger.js'
 import { encryptPrivateKey, storeKey, hexToNsec, markKeyBackedUp, retrieveKey } from '../../../services/KeyService.js'
@@ -84,10 +85,40 @@ export async function createAccountReal(
         })
         if (existingKey) {
           log.admin(`Found existing pubkey ${existingKey.pubkey} for ${username}`)
+          const existingPrivateKeyHex = await retrieveKey(username)
+          if (existingPrivateKeyHex) {
+            const existingSigner = new NDKPrivateKeySigner(existingPrivateKeyHex)
+            const currentConfig = await admin.config()
+            const daemonServiceEntryId = admin.getPlatformServiceEntryId?.()
+            if (!daemonServiceEntryId) {
+              throw new Error('Signer daemon has no verified platformServiceEntryId')
+            }
+            // Idempotency: both publishGenesisEntry and publishUsernameEvent query first.
+            // If a crash occurred between genesis and 415 publication, this branch self-heals
+            // by publishing the missing Kind 415 with deterministic content and matching kid.
+            const { publishGenesisEntry } = await import('../../lib/keychain-event.js')
+            const genesisEntryId = await publishGenesisEntry(
+              existingSigner,
+              existingKey.pubkey,
+              currentConfig.nostr.relays,
+              daemonServiceEntryId,
+              undefined,
+              admin.ndk
+            )
+            await publishUsernameEvent(
+              existingSigner,
+              username,
+              existingKey.pubkey,
+              currentConfig.nostr.relays,
+              undefined,
+              genesisEntryId,
+              admin.ndk
+            )
+            await publishInvitedEventIfNeeded(inviterPubkey, existingKey.pubkey, admin, req.id)
+          }
+
           await grantPermissions(req, username, clientPubkey)
           log.admin('permissions re-granted for existing user')
-
-          await publishInvitedEventIfNeeded(inviterPubkey, existingKey.pubkey, admin, req.id)
 
           return admin.rpc.sendResponse(req.id, req.pubkey, existingKey.pubkey, KIND_ADMIN_RESPONSE)
         }
@@ -120,8 +151,23 @@ export async function createAccountReal(
     await admin.loadNsec!(keyName, nsec)
 
     const currentConfig = await admin.config()
-    await publishUsernameEvent(key, username, generatedUser.pubkey, currentConfig.nostr.relays)
-    log.admin(`[${req.id}] Kind 415 published for ${username}`)
+    const daemonServiceEntryId = admin.getPlatformServiceEntryId?.()
+    if (!daemonServiceEntryId) {
+      throw new Error('Signer daemon has no verified platformServiceEntryId')
+    }
+    const { publishGenesisEntry } = await import('../../lib/keychain-event.js')
+    const genesisEntryId = await publishGenesisEntry(
+      key,
+      generatedUser.pubkey,
+      currentConfig.nostr.relays,
+      daemonServiceEntryId,
+      undefined,
+      admin.ndk
+    )
+    log.admin(`[${req.id}] Kind 297 genesis published for ${username} (id: ${genesisEntryId})`)
+
+    await publishUsernameEvent(key, username, generatedUser.pubkey, currentConfig.nostr.relays, undefined, genesisEntryId, admin.ndk)
+    log.admin(`[${req.id}] Kind 415 published for ${username} with kid ${genesisEntryId}`)
 
     await publishInvitedEventIfNeeded(inviterPubkey, generatedUser.pubkey, admin, req.id)
 
@@ -177,7 +223,9 @@ async function publishInvitedEventIfNeeded(
   const inviterSigner = new NDKPrivateKeySigner(inviterPrivateKeyHex)
   const currentConfig = await admin.config()
   const { publishInvitedEvent } = await import('../../lib/invited-event.js')
-  await publishInvitedEvent(inviterSigner, inviteePubkey, currentConfig.nostr.relays)
+  const inviterUid = identityIdFromPublicKey(inviterPubkey)
+  const inviterEntry = await queryCurrentIdentityEntry(admin.ndk, inviterUid)
+  await publishInvitedEvent(inviterSigner, inviteePubkey, currentConfig.nostr.relays, undefined, inviterEntry?.id, admin.ndk)
   log.admin(`${prefix} Kind 723 published for invitee ${inviteePubkey.substring(0, 16)}... by inviter ${inviterKeyRecord.keyName}`)
 }
 

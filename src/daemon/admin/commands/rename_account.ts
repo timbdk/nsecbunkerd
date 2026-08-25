@@ -62,8 +62,14 @@ export default async function renameAccount(
 
   log.admin(`Found account: ${keyRecord.keyName}. Emitting new Kind 415...`)
 
-  // Publish the new Kind 415 event
-  await publishUsernameEvent(userSigner, newUsername, pubkey, relayUrls)
+  // Query own chain to find current identity entry id for kid
+  const { queryCurrentIdentityEntry } = await import('../../lib/keychain-event.js')
+  const { identityIdFromPublicKey } = await import('verity-event-data-module')
+  const uid = identityIdFromPublicKey(pubkey)
+  const currentIdentity = await queryCurrentIdentityEntry(admin.ndk, uid)
+
+  // Publish the new Kind 415 event with kid
+  await publishUsernameEvent(userSigner, newUsername, pubkey, relayUrls, undefined, currentIdentity?.id, admin.ndk)
 
   log.admin(`rename_account completed for pubkey=${pubkey}, username=${newUsername}`)
 

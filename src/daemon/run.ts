@@ -1,4 +1,4 @@
-import NDK, { NDKEvent, NDKPrivateKeySigner, NDKRelayAuthPolicies, Nip46PermitCallback, Nip46PermitCallbackParams } from '@nostr-dev-kit/ndk'
+import NDK, { NDKEvent, NDKPrivateKeySigner, NDKRelayAuthPolicies, NDKRelaySet, Nip46PermitCallback, Nip46PermitCallbackParams } from '@nostr-dev-kit/ndk'
 import { log, auditSigningRequest, logStartup, logError } from '../lib/logger.js'
 import { nip19, utils } from 'nostr-tools'
 const { bytesToHex } = utils
@@ -83,6 +83,8 @@ export class Daemon {
   public ndk: NDK
   public httpServer: any
   public isReady: boolean = false
+  public platformId: string = ''
+  public platformServiceEntryId: string | null = null
 
   constructor(config: DaemonConfig) {
     this.config = config
@@ -96,6 +98,7 @@ export class Daemon {
     )
 
     this.adminInterface.loadNsec = this.loadNsec.bind(this)
+    this.adminInterface.getPlatformServiceEntryId = () => this.platformServiceEntryId
 
     this.ndk = new NDK({
       explicitRelayUrls: config.nostr.relays,
@@ -124,7 +127,47 @@ export class Daemon {
     })
   }
 
+  async fetchPlatformChain(platformId: string): Promise<any[]> {
+    return new Promise<any[]>((resolve, reject) => {
+      const events: any[] = []
+      const relaySet = NDKRelaySet.fromRelayUrls(this.config.nostr.relays, this.ndk)
 
+      const timeout = setTimeout(() => {
+        if (events.length === 0) {
+          reject(new Error(`fetchPlatformChain timed out after 10000ms with no events from relay for platform id ${platformId}`))
+        } else {
+          resolve(events)
+        }
+      }, 10000)
+
+      const sub = this.ndk.subscribe(
+        { kinds: [297], authors: [platformId] },
+        { closeOnEose: true, relaySet }
+      )
+      sub.on('event', (ev: NDKEvent) => {
+        events.push({
+          id: ev.id,
+          uid: (ev as any).uid ?? ev.pubkey,
+          created_at: ev.created_at,
+          kind: ev.kind,
+          variant: ev.tags?.find((t) => t[0] === 'v')?.[1],
+          kid: (ev as any).kid,
+          key: (ev as any).key,
+          tags: ev.tags,
+          content: ev.content,
+          sig: ev.sig
+        })
+      })
+      sub.on('eose', () => {
+        clearTimeout(timeout)
+        if (events.length === 0) {
+          reject(new Error(`fetchPlatformChain received EOSE with no events from relay for platform id ${platformId}`))
+        } else {
+          resolve(events)
+        }
+      })
+    })
+  }
 
   async startKeys() {
     // Load all encrypted keys from SQLite database
@@ -167,6 +210,15 @@ export class Daemon {
       process.exit(1)
     }
     logStartup('SIGNER_MASTER_KEY validated')
+
+    // Validate VERITY_PLATFORM_ID is set
+    const platformId = process.env.VERITY_PLATFORM_ID
+    if (!platformId || platformId.length !== 64) {
+      logError('daemon', 'CRITICAL: VERITY_PLATFORM_ID environment variable not set or invalid (must be 64-hex SHA-256)')
+      process.exit(1)
+    }
+    this.platformId = platformId
+    logStartup(`Platform ID configured: ${platformId.substring(0, 16)}...`)
 
     // Validate stored encrypted keys (if any)
     try {
@@ -212,6 +264,48 @@ export class Daemon {
       } catch (e: any) {
         logError('daemon', `Initial connection failed: ${e.message}`)
         log.daemon(`Retrying in ${RETRY_DELAY_MS}ms...`)
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS))
+      }
+    }
+
+    // Platform chain verification with retry loop
+    const { schnorr } = await import('@noble/curves/secp256k1.js')
+    const { sha256 } = await import('@noble/hashes/sha2.js')
+    const { hexToBytes, bytesToHex } = await import('@noble/hashes/utils.js')
+    const { verifyPlatformChain, findServiceEntry } = await import('verity-event-data-module')
+
+    const masterKeyPubkey = schnorr.getPublicKey(hexToBytes(masterKey))
+    const daemonKeyHash = bytesToHex(sha256(masterKeyPubkey))
+
+    let platformVerified = false
+    let platformAttempts = 0
+
+    while (!platformVerified) {
+      platformAttempts++
+      log.daemon(`Verifying platform chain (attempt ${platformAttempts})...`)
+      try {
+        const events = await this.fetchPlatformChain(platformId)
+        const verification = verifyPlatformChain(events, platformId)
+        if (!verification.verified) {
+          throw new Error(verification.error || 'platform chain verification failed')
+        }
+
+        const serviceEntry = findServiceEntry(events, daemonKeyHash)
+        if (!serviceEntry) {
+          throw new Error(`daemon service entry missing for key hash ${daemonKeyHash}`)
+        }
+
+        this.platformServiceEntryId = serviceEntry.id
+        platformVerified = true
+        logStartup(`✅ Platform chain verified: ${events.length} entries, daemon service entry ${serviceEntry.id.substring(0, 16)}...`)
+
+        checkpointService.broadcast('signer.platform_chain.verified', {
+          platformId: platformId.substring(0, 16),
+          serviceEntryId: serviceEntry.id.substring(0, 16)
+        })
+      } catch (e: any) {
+        logError('daemon', `Platform chain verification attempt ${platformAttempts} failed: ${e.message}`)
+        log.daemon(`Retrying platform chain verification in ${RETRY_DELAY_MS}ms...`)
         await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS))
       }
     }

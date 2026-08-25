@@ -42,10 +42,11 @@ export type IAdminOpts = {
 
 class AdminInterface {
   private npubs: string[]
-  private ndk: NDK
+  public ndk: NDK
   private signerUser?: NDKUser
   readonly rpc: NDKNostrRpc
   public loadNsec?: (keyName: string, nsec: string) => void
+  public getPlatformServiceEntryId?: () => string | null
 
   public readonly opts: IAdminOpts
   private configData: IConfig
