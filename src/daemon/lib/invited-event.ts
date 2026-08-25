@@ -1,5 +1,5 @@
 import NDK, { NDKPrivateKeySigner, NDKRelayAuthPolicies } from '@nostr-dev-kit/ndk'
-import { Kind723Invited } from 'verity-event-data-module'
+import { Kind723Invited, identityIdFromPublicKey } from 'verity-event-data-module'
 import { log } from '../../lib/logger.js'
 import { checkpointService } from '../../services/CheckpointService.js'
 
@@ -49,8 +49,12 @@ export async function publishInvitedEvent(
 
   try {
     const inviterPubkey = await inviterSigner.user().then(u => u.pubkey)
+    const inviterPubkeyBytes = Buffer.from(inviterPubkey, 'hex')
+    const key = 'secp256k1-schnorr:' + inviterPubkeyBytes.toString('base64')
+    const uid = identityIdFromPublicKey(key)
+
     // Idempotency: check if Kind 723 already exists for this inviter and invitee
-    const existing = await queryExistingInvitedEvent(ndk, inviterPubkey, inviteePubkey)
+    const existing = await queryExistingInvitedEvent(ndk, uid, inviteePubkey)
     if (existing) {
       log.admin(`Kind 723 already exists for inviter ${inviterPubkey.substring(0, 8)} -> invitee ${inviteePubkey.substring(0, 8)}, skipping publish`)
       checkpointService.broadcast('signer.kind723.published', {
@@ -62,7 +66,12 @@ export async function publishInvitedEvent(
     }
 
     const builder = Kind723Invited.build({ inviteePubkey })
-    const event = await builder.toSignedNDKEvent({ ndk, signer: inviterSigner, pubkey: inviterPubkey })
+    const event = await builder.toSignedNDKEvent({
+      ndk,
+      signer: inviterSigner,
+      uid,
+      key
+    })
     const published = await event.publish()
 
     if (published.size === 0) {
@@ -85,7 +94,7 @@ export async function publishInvitedEvent(
 
 async function queryExistingInvitedEvent(
   ndk: NDK,
-  inviterPubkey: string,
+  inviterUid: string,
   inviteePubkey: string
 ): Promise<boolean> {
   return new Promise<boolean>((resolve, reject) => {
@@ -97,7 +106,7 @@ async function queryExistingInvitedEvent(
 
     const filter = {
       kinds: [723],
-      authors: [inviterPubkey],
+      authors: [inviterUid],
       '#p': [inviteePubkey]
     }
 

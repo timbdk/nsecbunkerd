@@ -1,23 +1,23 @@
 import NDK, { NDKPrivateKeySigner, NDKRelayAuthPolicies } from '@nostr-dev-kit/ndk'
-import { Kind415UsernameRegistration } from 'verity-event-data-module'
+import { Kind415UsernameRegistration, identityIdFromPublicKey } from 'verity-event-data-module'
 import { log } from '../../lib/logger.js'
 import { checkpointService } from '../../services/CheckpointService.js'
 
 /**
  * Publish a Kind 415 username registration event (idempotent).
  *
- * Creates the relay-queryable mapping: username → pubkey.
+ * Creates the relay-queryable mapping: username → uid.
  * Signed by the user's own key (not the admin/registrar key).
  *
  * Authentication model (two identity layers):
  * - Connection identity: SIGNER_MASTER_KEY authenticates the WebSocket via NIP-42.
  *   The relay requires this trusted signer connection for Kind 415 writes.
- * - Event identity: userSigner signs the event itself (event.pubkey = user's key).
- *   The relay allows event.pubkey ≠ connection pubkey ("No Identity Lock" design).
+ * - Event identity: userSigner signs the event itself (event.uid = user's identity id).
+ *   The relay allows event.uid ≠ connection uid ("No Identity Lock" design).
  *
  * Flow:
  * 1. Connect to relay and authenticate as trusted signer (SIGNER_MASTER_KEY)
- * 2. Query relay for existing Kind 415 with matching pubkey + username
+ * 2. Query relay for existing Kind 415 with matching uid + username
  * 3. If found → skip (already published, e.g. pg-boss retry)
  * 4. If not found → sign with user's key and publish
  * 5. If relay unreachable → throw (pg-boss will retry the full job)
@@ -70,8 +70,11 @@ export async function publishUsernameEvent(
   }
 
   try {
-    // Idempotency: check if Kind 415 already exists for this pubkey + username
-    const existing = await queryExistingUsernameEvent(ndk, pubkey, username)
+    const key = 'secp256k1-schnorr:' + Buffer.from(pubkey, 'hex').toString('base64')
+    const uid = identityIdFromPublicKey(pubkey)
+
+    // Idempotency: check if Kind 415 already exists for this uid + username
+    const existing = await queryExistingUsernameEvent(ndk, uid, username)
     if (existing) {
       log.admin(`Kind 415 already exists for ${username}, skipping publish`)
       checkpointService.broadcast('signer.kind415.published', {
@@ -83,10 +86,15 @@ export async function publishUsernameEvent(
     }
 
     // Construct via Level 2 Builder, using build() callback for the dominant claim case.
-    // Event identity: signed by user's own key (event.pubkey = user's pubkey)
+    // Event identity: signed by user's own key
     let builder = Kind415UsernameRegistration.build(username)
     if (createdAt) builder = builder.createdAt(createdAt)
-    const event = await builder.toSignedNDKEvent({ ndk, signer: userSigner, pubkey })
+    const event = await builder.toSignedNDKEvent({
+      ndk,
+      signer: userSigner,
+      uid,
+      key
+    })
     const published = await event.publish()
 
     if (published.size === 0) {
@@ -108,12 +116,12 @@ export async function publishUsernameEvent(
 }
 
 /**
- * Query relay for an existing Kind 415 event matching pubkey + username.
+ * Query relay for an existing Kind 415 event matching uid + username.
  * Returns true if found, false if not, throws if relay unreachable.
  */
 async function queryExistingUsernameEvent(
   ndk: NDK,
-  pubkey: string,
+  uid: string,
   username: string
 ): Promise<boolean> {
   return new Promise<boolean>((resolve, reject) => {
@@ -125,7 +133,7 @@ async function queryExistingUsernameEvent(
 
     const filter = {
       ...Kind415UsernameRegistration.filters.byUsername(username),
-      authors: [pubkey]
+      authors: [uid]
     }
 
     const sub = ndk.subscribe(

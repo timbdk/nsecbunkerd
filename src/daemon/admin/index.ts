@@ -12,7 +12,7 @@ import NDK, {
 import { nip19 } from 'nostr-tools'
 import {
   KIND_ADMIN_COMMAND, KIND_ADMIN_RESPONSE,
-  AdminCommandDefinition
+  AdminCommandDefinition, identityIdFromPublicKey
 } from 'verity-event-data-module'
 
 export interface ValidatedRpcRequest<T> extends NDKRpcRequest {
@@ -93,9 +93,10 @@ class AdminInterface {
       .then(() => {
         // Subscribe only to admin commands. Responses use KIND_ADMIN_RESPONSE
         // and are published by us, not consumed.
+        const signerUid = identityIdFromPublicKey(this.signerUser!.pubkey)
         this.rpc.subscribe({
           kinds: [KIND_ADMIN_COMMAND as number],
-          '#p': [this.signerUser!.pubkey]
+          '#p': [this.signerUser!.pubkey, signerUid]
         })
 
         this.rpc.on('request', (req) => this.handleRequest(req))
@@ -175,7 +176,8 @@ class AdminInterface {
     const registrarNpub = this.opts?.registrarNpub
     if (registrarNpub) {
       const registrarPubkey = new NDKUser({ npub: registrarNpub }).pubkey
-      if (req.pubkey === registrarPubkey) {
+      const registrarUid = identityIdFromPublicKey(registrarPubkey)
+      if (req.pubkey === registrarPubkey || req.pubkey === registrarUid) {
         const payloads = AdminCommandDefinition.describe().rpcPayloads
         const allowedMethods = payloads 
           ? Object.entries(payloads)

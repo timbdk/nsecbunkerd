@@ -1,5 +1,6 @@
 import { NDKRpcRequest } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
+import { identityIdFromPublicKey } from 'verity-event-data-module'
 import { log } from '../../../lib/logger.js'
 
 export async function validateRequestFromAdmin(req: NDKRpcRequest, npubs: string[]): Promise<boolean> {
@@ -11,6 +12,7 @@ export async function validateRequestFromAdmin(req: NDKRpcRequest, npubs: string
   }
 
   const hexpubkeys = npubs.map((npub) => nip19.decode(npub).data as string)
+  const uids = hexpubkeys.map((pk) => identityIdFromPublicKey(pk))
 
-  return hexpubkeys.includes(hexpubkey)
+  return hexpubkeys.includes(hexpubkey) || uids.includes(hexpubkey)
 }

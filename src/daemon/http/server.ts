@@ -3,6 +3,7 @@ import prisma from '../../db.js'
 import { nip19, utils } from 'nostr-tools'
 const { bytesToHex } = utils
 import { NDKEvent, NDKPrivateKeySigner } from '@nostr-dev-kit/ndk'
+import { identityIdFromPublicKey } from 'verity-event-data-module'
 import { Server } from 'bun'
 import { log, logError } from '../../lib/logger.js'
 
@@ -102,6 +103,10 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
               const user = await testSigner.user()
               const encryptedAttestation = await testSigner.encrypt(user, attestationPayload, 'nip44')
 
+              const userPubkeyBytes = Buffer.from(pubkey, 'hex')
+              const keyField = 'secp256k1-schnorr:' + userPubkeyBytes.toString('base64')
+              const uid = identityIdFromPublicKey(keyField)
+
               const attestationEvent = new NDKEvent(daemon.ndk, {
                 kind: 24135,
                 content: encryptedAttestation,
@@ -111,9 +116,10 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
                   ['policy', 'allow', 'user', pubkey],
                   ['client', clientPubkey],
                   ['user', pubkey]
-                ],
-                pubkey: pubkey
+                ]
               } as any)
+              attestationEvent.uid = uid
+              attestationEvent.key = keyField
 
               await attestationEvent.sign(testSigner)
               await attestationEvent.publish()
@@ -199,12 +205,18 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
 
             const signer = new NDKPrivateKeySigner(nsec)
             const user = await signer.user()
+            const userPubkeyBytes = Buffer.from(user.pubkey, 'hex')
+            const keyField = 'secp256k1-schnorr:' + userPubkeyBytes.toString('base64')
+            const uid = identityIdFromPublicKey(keyField)
+
             const event = new NDKEvent(daemon.ndk, {
               kind: 1,
               content: challenge,
               created_at: Math.floor(Date.now() / 1000),
               tags: []
             } as any)
+            event.uid = uid
+            event.key = keyField
             await event.sign(signer)
 
             return Response.json({ pubkey: user.pubkey, sig: event.sig, verified: true }, { headers })
