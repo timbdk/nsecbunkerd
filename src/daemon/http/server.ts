@@ -103,9 +103,12 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
               const user = await testSigner.user()
               const encryptedAttestation = await testSigner.encrypt(user, attestationPayload, 'nip44')
 
-              const userPubkeyBytes = Buffer.from(pubkey, 'hex')
-              const keyField = 'secp256k1-schnorr:' + userPubkeyBytes.toString('base64')
+              const { NDKRelaySet } = await import('@nostr-dev-kit/ndk')
+              const { identityIdFromPublicKey } = await import('verity-event-data-module')
               const uid = identityIdFromPublicKey(pubkey)
+              const userPubkeyBytes = Buffer.from(pubkey, 'hex')
+              const keyField = `secp256k1-schnorr:${userPubkeyBytes.toString('base64')}`
+
 
               const attestationEvent = new NDKEvent(daemon.ndk, {
                 kind: 24135,
@@ -122,7 +125,8 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
               attestationEvent.key = keyField
 
               await attestationEvent.sign(testSigner)
-              await attestationEvent.publish()
+              const relaySet = NDKRelaySet.fromRelayUrls(daemon.config.nostr.relays, daemon.ndk)
+              await attestationEvent.publish(relaySet)
               checkpointService.broadcast('signer.testing.identity_attested', {
                 devicePubkey: clientPubkey.substring(0, 16),
                 userPubkey: pubkey.substring(0, 16)
@@ -169,7 +173,12 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
             }, { status: 201, headers })
           } catch (e: any) {
             if (e.code === 'P2002') return Response.json({ error: 'Key already exists' }, { status: 409, headers })
-            logError('http', `Testing register error:`, e)
+            logError('http', `Testing register error: ${e.message}`, e)
+            if (e.errors) {
+              for (const [r, err] of e.errors) {
+                logError('http', `Relay ${(r as any)?.url ?? r} rejected: ${(err as any)?.message ?? err}`)
+              }
+            }
             return Response.json({ error: e.message }, { status: 500, headers })
           }
         }

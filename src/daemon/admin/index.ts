@@ -44,9 +44,11 @@ class AdminInterface {
   private npubs: string[]
   public ndk: NDK
   private signerUser?: NDKUser
+  private rpcSigner: NDKPrivateKeySigner
   readonly rpc: NDKNostrRpc
   public loadNsec?: (keyName: string, nsec: string) => void
   public getPlatformServiceEntryId?: () => string | null
+  public masterKey: string
 
   public readonly opts: IAdminOpts
   private configData: IConfig
@@ -56,20 +58,28 @@ class AdminInterface {
     this.opts = opts
     this.configData = configData
     this.npubs = opts.npubs || []
+    this.masterKey = configData.masterKey || process.env.SIGNER_MASTER_KEY || ''
+
+    const connectionSigner = this.masterKey
+      ? new NDKPrivateKeySigner(this.masterKey)
+      : new NDKPrivateKeySigner(opts.key)
+
+    this.rpcSigner = new NDKPrivateKeySigner(opts.key)
+
     this.ndk = new NDK({
       explicitRelayUrls: opts.adminRelays,
       enableOutboxModel: false,
-      signer: new NDKPrivateKeySigner(opts.key)
+      signer: connectionSigner
     })
     // Enable NIP-42 auto-auth for admin relay connections
     this.ndk.relayAuthDefaultPolicy = NDKRelayAuthPolicies.signIn({ ndk: this.ndk })
-    this.ndk.signer?.user().then((user: NDKUser) => {
+    this.rpcSigner.user().then((user: NDKUser) => {
       this.signerUser = user
       this.validateAdminIdentity(user)
       this.connect()
     })
 
-    this.rpc = new NDKNostrRpc(this.ndk, this.ndk.signer!, log.admin)
+    this.rpc = new NDKNostrRpc(this.ndk, this.rpcSigner, log.admin)
   }
 
   public async config(): Promise<IConfig> {
@@ -77,7 +87,7 @@ class AdminInterface {
   }
 
   public async npub() {
-    return (await this.ndk.signer?.user())!.npub
+    return (await this.rpcSigner.user()).npub
   }
 
   private connect() {
