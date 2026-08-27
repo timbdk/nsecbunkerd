@@ -116,27 +116,11 @@ async function queryExistingUsernameEvent(
   pubkey: string,
   username: string
 ): Promise<boolean> {
-  return new Promise<boolean>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error('Timeout querying relay for existing Kind 415'))
-    }, 10000)
+  const filter = {
+    ...Kind415UsernameRegistration.filters.byUsername(username),
+    authors: [pubkey]
+  }
 
-    let found = false
-
-    const filter = {
-      ...Kind415UsernameRegistration.filters.byUsername(username),
-      authors: [pubkey]
-    }
-
-    const sub = ndk.subscribe(
-      filter,
-      { closeOnEose: true }
-    )
-
-    sub.on('event', () => { found = true })
-    sub.on('eose', () => {
-      clearTimeout(timeout)
-      resolve(found)
-    })
-  })
+  const event = await ndk.fetchEvent(filter)
+  return !!event
 }
