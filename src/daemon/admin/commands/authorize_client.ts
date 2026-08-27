@@ -1,5 +1,5 @@
 import { NDKRpcRequest } from '@nostr-dev-kit/ndk'
-import { KIND_ADMIN_RESPONSE, type AuthorizeClientInput } from 'verity-event-data-module'
+import { KIND_ADMIN_RESPONSE, identityIdFromPublicKey, type AuthorizeClientInput } from 'verity-event-data-module'
 import AdminInterface, { type ValidatedRpcRequest } from '../index.js'
 import { allowAllRequestsFromKey } from '../../lib/acl/index.js'
 import prisma from '../../../db.js'
@@ -16,7 +16,7 @@ import { log } from '../../../lib/logger.js'
  *
  * Params: [keyName, userPubkey, clientPubkey, correlationId?]
  * - keyName: The key identifier (e.g., "username")
- * - userPubkey: The hex pubkey of the user's key (for verification)
+ * - userPubkey: The hex pubkey or uid of the user's key (for verification)
  * - clientPubkey: The hex pubkey of the client's ephemeral keypair (to authorize)
  * - correlationId: Optional correlation ID for tracing across services
  */
@@ -45,8 +45,8 @@ export default async function authorizeClient(admin: AdminInterface, req: Valida
     return admin.rpc.sendResponse(req.id, req.pubkey, 'error', KIND_ADMIN_RESPONSE, `Key not found: ${keyName}`)
   }
 
-  // Verify the userPubkey matches (ensures the requester knows the correct user)
-  if (key.pubkey !== userPubkey) {
+  // Verify the userPubkey / userUid matches (ensures the requester knows the correct user)
+  if (key.pubkey !== userPubkey && identityIdFromPublicKey(key.pubkey) !== userPubkey) {
     log.admin(`Pubkey mismatch: expected ${key.pubkey.slice(0, 16)}..., got ${userPubkey.slice(0, 16)}...`)
     scope.logError(new Error('Pubkey mismatch'), { expected: key.pubkey, got: userPubkey })
     return admin.rpc.sendResponse(req.id, req.pubkey, 'error', KIND_ADMIN_RESPONSE, 'User pubkey mismatch')

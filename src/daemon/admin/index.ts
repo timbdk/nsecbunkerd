@@ -35,6 +35,7 @@ import { checkpointService } from '../../services/CheckpointService.js'
 export type IAdminOpts = {
   npubs: string[]
   registrarNpub?: string
+  registrarUid?: string
   adminRelays: string[]
   key: string
 }
@@ -184,11 +185,20 @@ class AdminInterface {
   }
 
   private async validateRequest(req: NDKRpcRequest): Promise<void> {
-    const registrarNpub = this.opts?.registrarNpub
-    if (registrarNpub) {
-      const registrarPubkey = new NDKUser({ npub: registrarNpub }).pubkey
-      const registrarUid = identityIdFromPublicKey(registrarPubkey)
-      if (req.pubkey === registrarPubkey || req.pubkey === registrarUid) {
+    const registrarIdentifier = this.opts?.registrarUid || this.opts?.registrarNpub
+    if (registrarIdentifier) {
+      let registrarPubkey: string | undefined
+      let registrarUid: string | undefined
+      if (/^[0-9a-fA-F]{64}$/.test(registrarIdentifier)) {
+        registrarPubkey = registrarIdentifier
+        registrarUid = registrarIdentifier
+      } else if (registrarIdentifier.startsWith('npub1')) {
+        try {
+          registrarPubkey = new NDKUser({ npub: registrarIdentifier }).pubkey
+          registrarUid = identityIdFromPublicKey(registrarPubkey)
+        } catch {}
+      }
+      if ((registrarPubkey && req.pubkey === registrarPubkey) || (registrarUid && req.pubkey === registrarUid)) {
         const payloads = AdminCommandDefinition.describe().rpcPayloads
         const allowedMethods = payloads 
           ? Object.entries(payloads)
@@ -196,10 +206,10 @@ class AdminInterface {
               .map(([name]) => name)
           : []
         if (allowedMethods.includes(req.method)) {
-          log.admin(`✅ Allowing ${req.method} from Restricted Registrar: ${registrarNpub}`)
+          log.admin(`✅ Allowing ${req.method} from Restricted Registrar: ${registrarIdentifier}`)
           return
         } else {
-          log.admin(`⛔ Denying ${req.method} from Restricted Registrar: ${registrarNpub}`)
+          log.admin(`⛔ Denying ${req.method} from Restricted Registrar: ${registrarIdentifier}`)
           throw new Error('Registrar is only allowed to call: ' + allowedMethods.join(', '))
         }
       }

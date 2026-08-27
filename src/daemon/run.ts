@@ -88,7 +88,7 @@ export class Daemon {
 
   constructor(config: DaemonConfig) {
     this.config = config
-    const registrarNpub = process.env.REGISTRAR_NPUB
+    const registrarNpub = process.env.REGISTRAR_UID || process.env.REGISTRAR_NPUB
     this.adminInterface = new AdminInterface(
       {
         ...config.admin,

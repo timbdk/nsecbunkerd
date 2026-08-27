@@ -34,10 +34,21 @@ export default async function renameAccount(
 
   log.admin(`rename_account request received: pubkey=${pubkey}, username=${newUsername}`)
 
-  // Retrieve existing key from DB by pubkey
-  const keyRecord = await prisma.key.findFirst({
+  const { identityIdFromPublicKey } = await import('verity-event-data-module')
+
+  // Retrieve existing key from DB by pubkey, keyName, or derived identity UID
+  let keyRecord = await prisma.key.findFirst({
     where: { pubkey }
   })
+  if (!keyRecord) {
+    keyRecord = await prisma.key.findFirst({
+      where: { keyName: pubkey }
+    })
+  }
+  if (!keyRecord) {
+    const allKeys = await prisma.key.findMany()
+    keyRecord = allKeys.find((k: any) => identityIdFromPublicKey(k.pubkey) === pubkey) || null
+  }
 
   if (!keyRecord) {
     logError('admin', `rename_account failed: No key found for pubkey ${pubkey}`)
@@ -55,7 +66,8 @@ export default async function renameAccount(
   
   // Actually verify that the derived pubkey is the same (sanity check)
   const userObj = await userSigner.user()
-  if (userObj.pubkey !== pubkey) {
+  const derivedUid = identityIdFromPublicKey(userObj.pubkey)
+  if (userObj.pubkey !== pubkey && derivedUid !== pubkey && keyRecord.keyName !== pubkey) {
       logError('admin', `rename_account failed: decrypted key pubkey mismatch for ${pubkey}`)
       throw new Error(`Internal error: key pubkey mismatch`)
   }
@@ -64,12 +76,10 @@ export default async function renameAccount(
 
   // Query own chain to find current identity entry id for kid
   const { queryCurrentIdentityEntry } = await import('../../lib/keychain-event.js')
-  const { identityIdFromPublicKey } = await import('verity-event-data-module')
-  const uid = identityIdFromPublicKey(pubkey)
-  const currentIdentity = await queryCurrentIdentityEntry(admin.ndk, uid)
+  const currentIdentity = await queryCurrentIdentityEntry(admin.ndk, derivedUid)
 
   // Publish the new Kind 415 event with kid
-  await publishUsernameEvent(userSigner, newUsername, pubkey, relayUrls, undefined, currentIdentity?.id, admin.ndk)
+  await publishUsernameEvent(userSigner, newUsername, userObj.pubkey, relayUrls, undefined, currentIdentity?.id, admin.ndk)
 
   log.admin(`rename_account completed for pubkey=${pubkey}, username=${newUsername}`)
 
