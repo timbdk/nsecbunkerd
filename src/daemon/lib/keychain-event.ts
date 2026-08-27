@@ -236,3 +236,241 @@ export async function publishGenesisEntry(
     }
   }
 }
+
+// ── Delegate Publication ─────────────────────────────────────────────────────
+
+/**
+ * Publishes a Kind 297 delegate event authorizing a client signing key.
+ * Signed by the user's identity key and endorsed by the daemon key.
+ * Day-quantized and held-until-first-use at the relay.
+ */
+export async function publishDelegateEntry(
+  userSigner: NDKPrivateKeySigner,
+  pubkey: string,
+  localSigningPubkey: string,
+  relayUrls: string[],
+  platformServiceEntryId: string,
+  parentEntryId?: string,
+  createdAt?: number,
+  ndkInstance?: NDK
+): Promise<string> {
+  if (!relayUrls || relayUrls.length === 0) {
+    throw new Error('No relay URLs configured — cannot publish Kind 297')
+  }
+  const masterKey = process.env.SIGNER_MASTER_KEY
+  if (!masterKey) {
+    throw new Error('SIGNER_MASTER_KEY not set — cannot endorse or authenticate with relay')
+  }
+
+  let ndk: NDK
+  if (ndkInstance) {
+    ndk = ndkInstance
+  } else {
+    const authSigner = new NDKPrivateKeySigner(masterKey)
+    ndk = new NDK({
+      explicitRelayUrls: relayUrls,
+      signer: authSigner,
+      enableOutboxModel: false,
+      autoDeviceDiscovery: false,
+      autoFetchUserMutelist: false,
+      cacheAdapter: undefined
+    })
+    ndk.relayAuthDefaultPolicy = NDKRelayAuthPolicies.signIn({ ndk })
+    await ndk.connect(5000)
+  }
+
+  try {
+    const uid = identityIdFromPublicKey(pubkey)
+    let kid = parentEntryId
+    if (!kid) {
+      const genesis = await queryExistingGenesisEntry(ndk, uid)
+      if (!genesis) {
+        throw new Error(`Cannot issue delegate entry: no genesis entry found for ${uid}`)
+      }
+      kid = genesis.id
+    }
+
+    let localKeyStr: string
+    if (localSigningPubkey.startsWith('secp256k1-schnorr:')) {
+      localKeyStr = localSigningPubkey
+    } else if (/^[a-f0-9]{64}$/i.test(localSigningPubkey)) {
+      const pubBytes = hexToBytes(localSigningPubkey)
+      localKeyStr = `secp256k1-schnorr:${base64.encode(pubBytes)}`
+    } else {
+      localKeyStr = `secp256k1-schnorr:${localSigningPubkey}`
+    }
+
+    const nowSec = createdAt || Math.floor(Date.now() / 1000)
+    const startOfDay = Math.floor(nowSec / 86400) * 86400
+    const endOfDay = startOfDay + 86400 - 1
+
+    const contentWithoutPlatform = {
+      version: 1,
+      keys: {
+        sign: localKeyStr
+      },
+      valid: {
+        from: startOfDay,
+        until: endOfDay
+      }
+    }
+
+    const endorsement = buildEndorsement(
+      contentWithoutPlatform,
+      uid,
+      'delegate',
+      masterKey,
+      platformServiceEntryId
+    )
+
+    const fullContent = {
+      ...contentWithoutPlatform,
+      platform: endorsement
+    }
+
+    const builder = Kind297KeyChain.build({
+      variant: 'delegate',
+      kid,
+      created_at: startOfDay,
+      content: fullContent
+    })
+
+    const event = await builder.toSignedNDKEvent({
+      ndk,
+      signer: userSigner,
+      uid
+    })
+
+    const relaySet = NDKRelaySet.fromRelayUrls(relayUrls, ndk)
+    const published = await event.publish(relaySet)
+    if (published.size === 0) {
+      throw new Error(`Not enough relays received the Kind 297 delegate event (0 published, ${relayUrls.length} required)`)
+    }
+
+    log.admin(`Kind 297 delegate published for ${uid.substring(0, 16)}... (id: ${event.id})`)
+
+    checkpointService.broadcast('signer.kind297.published', {
+      variant: 'delegate',
+      entryId: event.id,
+      uid: uid.substring(0, 16),
+      skipped: false
+    })
+
+    return event.id
+  } finally {
+    if (!ndkInstance && ndk.pool) {
+      ndk.pool.relays.forEach((relay) => relay.disconnect())
+    }
+  }
+}
+
+// ── Revoke Publication ───────────────────────────────────────────────────────
+
+/**
+ * Publishes a Kind 297 revoke event referencing a target delegate entry via #e tag.
+ * Signed by the user's identity key and endorsed by the daemon key.
+ */
+export async function publishRevokeEntry(
+  userSigner: NDKPrivateKeySigner,
+  pubkey: string,
+  targetEntryId: string,
+  relayUrls: string[],
+  platformServiceEntryId: string,
+  parentEntryId?: string,
+  createdAt?: number,
+  ndkInstance?: NDK
+): Promise<string> {
+  if (!relayUrls || relayUrls.length === 0) {
+    throw new Error('No relay URLs configured — cannot publish Kind 297')
+  }
+  const masterKey = process.env.SIGNER_MASTER_KEY
+  if (!masterKey) {
+    throw new Error('SIGNER_MASTER_KEY not set — cannot endorse or authenticate with relay')
+  }
+
+  let ndk: NDK
+  if (ndkInstance) {
+    ndk = ndkInstance
+  } else {
+    const authSigner = new NDKPrivateKeySigner(masterKey)
+    ndk = new NDK({
+      explicitRelayUrls: relayUrls,
+      signer: authSigner,
+      enableOutboxModel: false,
+      autoDeviceDiscovery: false,
+      autoFetchUserMutelist: false,
+      cacheAdapter: undefined
+    })
+    ndk.relayAuthDefaultPolicy = NDKRelayAuthPolicies.signIn({ ndk })
+    await ndk.connect(5000)
+  }
+
+  try {
+    const uid = identityIdFromPublicKey(pubkey)
+    let kid = parentEntryId
+    if (!kid) {
+      const genesis = await queryExistingGenesisEntry(ndk, uid)
+      if (!genesis) {
+        throw new Error(`Cannot issue revoke entry: no genesis entry found for ${uid}`)
+      }
+      kid = genesis.id
+    }
+
+    const nowSec = createdAt || Math.floor(Date.now() / 1000)
+
+    const contentWithoutPlatform = {
+      version: 1
+    }
+
+    const endorsement = buildEndorsement(
+      contentWithoutPlatform,
+      uid,
+      'revoke',
+      masterKey,
+      platformServiceEntryId
+    )
+
+    const fullContent = {
+      ...contentWithoutPlatform,
+      platform: endorsement
+    }
+
+    const builder = Kind297KeyChain.build({
+      variant: 'revoke',
+      kid,
+      created_at: nowSec,
+      tags: {
+        e: targetEntryId
+      },
+      content: fullContent
+    })
+
+    const event = await builder.toSignedNDKEvent({
+      ndk,
+      signer: userSigner,
+      uid
+    })
+
+    const relaySet = NDKRelaySet.fromRelayUrls(relayUrls, ndk)
+    const published = await event.publish(relaySet)
+    if (published.size === 0) {
+      throw new Error(`Not enough relays received the Kind 297 revoke event (0 published, ${relayUrls.length} required)`)
+    }
+
+    log.admin(`Kind 297 revoke published for ${uid.substring(0, 16)}... (id: ${event.id}, revoked: ${targetEntryId})`)
+
+    checkpointService.broadcast('signer.kind297.published', {
+      variant: 'revoke',
+      entryId: event.id,
+      uid: uid.substring(0, 16),
+      skipped: false
+    })
+
+    return event.id
+  } finally {
+    if (!ndkInstance && ndk.pool) {
+      ndk.pool.relays.forEach((relay) => relay.disconnect())
+    }
+  }
+}
+

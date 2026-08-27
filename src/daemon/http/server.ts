@@ -187,7 +187,7 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
         if (url.pathname === '/testing/authorize-client' && req.method === 'POST') {
           try {
             const body = await req.json() as any
-            const { keyName, clientPubkey } = body
+            const { keyName, clientPubkey, certify, localSigningPubkey, createdAt } = body
             
             if (!keyName || !clientPubkey) return Response.json({ error: 'keyName and clientPubkey are required' }, { status: 400, headers })
 
@@ -205,12 +205,119 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
             await allowAllRequestsFromKey(clientPubkey, keyName, 'get_public_key', undefined, 'test-client')
             await allowAllRequestsFromKey(clientPubkey, keyName, 'ping', undefined, 'test-client')
 
+            let delegateEntryId: string | undefined
+            if (certify && localSigningPubkey) {
+              const { retrieveKey } = await import('../../services/KeyService.js')
+              const { publishDelegateEntry } = await import('../lib/keychain-event.js')
+              const nsec = await retrieveKey(keyName)
+              if (!nsec) throw new Error(`Private key not found for ${keyName}`)
+              const userSigner = new NDKPrivateKeySigner(nsec)
+              const daemonServiceEntryId = daemon.platformServiceEntryId
+              if (!daemonServiceEntryId) {
+                throw new Error('Signer daemon has no verified platformServiceEntryId')
+              }
+              delegateEntryId = await publishDelegateEntry(
+                userSigner,
+                key.pubkey,
+                localSigningPubkey,
+                daemon.config.nostr.relays,
+                daemonServiceEntryId,
+                undefined,
+                createdAt,
+                daemon.ndk
+              )
+              log.http(`🧪 Testing: published delegate entry ${delegateEntryId} for client ${clientPubkey.slice(0, 16)}... on key ${keyName}`)
+            }
+
             log.http(`🧪 Testing: authorized client ${clientPubkey.slice(0, 16)}... for key ${keyName}`)
             checkpointService.broadcast('signer.testing.authorize.completed', { keyName, clientPubkey })
 
-            return Response.json({ success: true, keyName, clientPubkey: clientPubkey.slice(0, 16) + '...' }, { status: 200, headers })
+            return Response.json({
+              success: true,
+              keyName,
+              clientPubkey: clientPubkey.slice(0, 16) + '...',
+              delegateEntryId
+            }, { status: 200, headers })
           } catch (e: any) {
             logError('http', `Testing authorize-client error:`, e)
+            return Response.json({ error: e.message }, { status: 500, headers })
+          }
+        }
+
+        // POST /testing/revoke-delegate
+        if (url.pathname === '/testing/revoke-delegate' && req.method === 'POST') {
+          try {
+            const body = await req.json() as any
+            const { keyName, entryId, createdAt } = body
+
+            if (!keyName) return Response.json({ error: 'keyName is required' }, { status: 400, headers })
+
+            const key = await prisma.key.findUnique({ where: { keyName } })
+            if (!key) return Response.json({ error: `Key not found: ${keyName}` }, { status: 404, headers })
+
+            const { retrieveKey } = await import('../../services/KeyService.js')
+            const { publishRevokeEntry } = await import('../lib/keychain-event.js')
+            const nsec = await retrieveKey(keyName)
+            if (!nsec) throw new Error(`Private key not found for ${keyName}`)
+            const userSigner = new NDKPrivateKeySigner(nsec)
+            const daemonServiceEntryId = daemon.platformServiceEntryId
+            if (!daemonServiceEntryId) {
+              throw new Error('Signer daemon has no verified platformServiceEntryId')
+            }
+
+            let targetEntryId = entryId
+            if (!targetEntryId) {
+              const { identityIdFromPublicKey, delegateEntriesFor } = await import('verity-event-data-module')
+              const uid = identityIdFromPublicKey(key.pubkey)
+              const eventsSet = await daemon.ndk.fetchEvents({
+                kinds: [297 as any],
+                authors: [uid]
+              })
+              const entries: any[] = []
+              for (const ev of eventsSet) {
+                try {
+                  const parsedContent = typeof ev.content === 'string' ? JSON.parse(ev.content) : ev.content
+                  const vTag = ev.tags?.find((t: string[]) => t[0] === 'v')
+                  entries.push({
+                    id: ev.id,
+                    uid: (ev as any).uid ?? ev.pubkey,
+                    created_at: ev.created_at,
+                    kind: ev.kind,
+                    variant: vTag?.[1],
+                    kid: (ev as any).kid,
+                    tags: ev.tags,
+                    content: parsedContent
+                  })
+                } catch { /* ignore */ }
+              }
+              const delegates = delegateEntriesFor(entries)
+              if (delegates.length === 0) {
+                return Response.json({ error: `No live delegate entries found for ${keyName}` }, { status: 404, headers })
+              }
+              targetEntryId = delegates[delegates.length - 1].id
+            }
+
+            const revokeEntryId = await publishRevokeEntry(
+              userSigner,
+              key.pubkey,
+              targetEntryId,
+              daemon.config.nostr.relays,
+              daemonServiceEntryId,
+              undefined,
+              createdAt,
+              daemon.ndk
+            )
+
+            log.http(`🧪 Testing: published revoke entry ${revokeEntryId} targeting ${targetEntryId} for key ${keyName}`)
+
+            return Response.json({
+              success: true,
+              keyName,
+              revokeEntryId,
+              revokedEntryId: targetEntryId
+            }, { status: 200, headers })
+          } catch (e: any) {
+            logError('http', `Testing revoke-delegate error:`, e)
             return Response.json({ error: e.message }, { status: 500, headers })
           }
         }
