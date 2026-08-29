@@ -147,6 +147,6 @@ async function queryExistingUsernameEvent(
     authors: [uid]
   }
 
-  const events = await ndk.fetchEvents(filter as any)
-  return events.size > 0
+  const event = await ndk.fetchEvent(filter as any)
+  return !!event
 }

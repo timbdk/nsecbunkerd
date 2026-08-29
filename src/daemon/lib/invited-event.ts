@@ -3,9 +3,6 @@ import { Kind723Invited, identityIdFromPublicKey } from 'verity-event-data-modul
 import { log } from '../../lib/logger.js'
 import { checkpointService } from '../../services/CheckpointService.js'
 
-/** Timeout for relay queries to check for existing Kind 723 events before publishing */
-const RELAY_QUERY_TIMEOUT_MS = 10_000
-
 /**
  * Publish a Kind 723 invited event (idempotent).
  * Mapped inviter -> invitee, signed by the inviter's own key.
@@ -110,28 +107,12 @@ async function queryExistingInvitedEvent(
   inviterUid: string,
   inviteePubkey: string
 ): Promise<boolean> {
-  return new Promise<boolean>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error('Timeout querying relay for existing Kind 723'))
-    }, RELAY_QUERY_TIMEOUT_MS)
+  const filter = {
+    kinds: [723],
+    authors: [inviterUid],
+    '#p': [inviteePubkey]
+  }
 
-    let found = false
-
-    const filter = {
-      kinds: [723],
-      authors: [inviterUid],
-      '#p': [inviteePubkey]
-    }
-
-    const sub = ndk.subscribe(
-      filter,
-      { closeOnEose: true }
-    )
-
-    sub.on('event', () => { found = true })
-    sub.on('eose', () => {
-      clearTimeout(timeout)
-      resolve(found)
-    })
-  })
+  const event = await ndk.fetchEvent(filter)
+  return !!event
 }
