@@ -16,6 +16,12 @@ class CheckpointService {
   private readonly clients = new Set<any>()
   private readonly enabled = process.env.NODE_ENV === 'testing'
   private server: ReturnType<typeof Bun.serve> | null = null
+  // Ring buffer of recent checkpoints, replayed to each new subscriber so a
+  // reconnecting pipeline monitor cannot miss events that fired during the gap.
+  // Subscribers pass ?since=<ts> to receive only the events newer than what
+  // they already saw, so stale events never replay.
+  private readonly recentCheckpoints: { ts: number; payload: string }[] = []
+  private readonly maxBuffer = 500
 
   /**
    * Start the WebSocket server. Call once from Daemon.start().
@@ -30,7 +36,11 @@ class CheckpointService {
       fetch(req, server) {
         const url = new URL(req.url)
         if (url.pathname === '/testing/stream') {
-          const upgraded = server.upgrade(req)
+          const sinceParam = url.searchParams.get('since')
+          const since = sinceParam === null ? undefined : Number.parseInt(sinceParam, 10)
+          const upgraded = server.upgrade(req, {
+            data: { since: Number.isFinite(since) ? since : undefined }
+          })
           if (!upgraded) {
             return new Response('WebSocket upgrade failed', { status: 400 })
           }
@@ -41,6 +51,13 @@ class CheckpointService {
       websocket: {
         open(ws) {
           self.clients.add(ws)
+          // Ack first (marks subscription) then replay only the checkpoints
+          // the subscriber has not seen yet.
+          const since = (ws.data as { since?: number } | undefined)?.since
+          const replay = self.recentCheckpoints
+            .filter((c) => since === undefined || c.ts > since)
+            .map((c) => c.payload)
+          ws.send(JSON.stringify({ type: 'ack', buffer: replay }))
           log.daemon(`Stream client connected (${self.clients.size} total)`)
         },
         close(ws) {
@@ -77,7 +94,7 @@ class CheckpointService {
    * @param data - Optional metadata (method, keyName, pubkey, etc.)
    */
   broadcast(step: string, data?: Record<string, any>): void {
-    if (!this.enabled || this.clients.size === 0) return
+    if (!this.enabled) return
 
     const payload = JSON.stringify({
       type: 'checkpoint',
@@ -86,6 +103,11 @@ class CheckpointService {
       service: 'signer',
       data,
     })
+
+    this.recentCheckpoints.push({ ts: Date.now(), payload })
+    if (this.recentCheckpoints.length > this.maxBuffer) {
+      this.recentCheckpoints.shift()
+    }
 
     for (const client of this.clients) {
       try {
