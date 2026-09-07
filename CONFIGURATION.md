@@ -1,35 +1,28 @@
-# Configuration
+# Signer Service Configuration
 
-nsecbunker.json is a JSON that stores the configuration of the bunker.
+The signer daemon is configured primarily through environment variables.
 
-## Properties
+> [!WARNING]
+> **Legacy `nsecbunker.json` Key Deprecation**:
+> Legacy key configuration in `nsecbunker.json` (`admin.key`, `keys.admin`, or `admin.npubs`) is deprecated and rejected at boot with a fatal exit. All daemon identities and encryption keys must be configured via environment variables.
 
-All properties are optional unless otherwise specified.
+## Required Environment Variables
 
-`admin.adminRelays`: Relays where the bunker will listen to for admin commands, including for the ability to create new users.
+| Variable | Type | Description |
+| :--- | :--- | :--- |
+| `SIGNER_KEK` | Hex (64 chars / 256 bits) | Vault Key Encryption Key (KEK) root. Memory-only, used for AES-256-GCM encryption of stored vault keys. Never used for signing. |
+| `SIGNER_DAEMON_KEY` | Hex (5,120 chars) | Daemon ML-DSA-44 secret key. Serves as the consolidated service signing identity for both the daemon NDK and admin interfaces, and signs platform endorsements. |
+| `SIGNER_DAEMON_ECDH_KEY` | Hex (64 chars) | Classical secp256k1 secret key used for daemon NIP-44/ECDH encryption operations. |
+| `VERITY_PLATFORM_ID` | Hex (64 chars) | Platform root key identifier (SHA-256 hash). Required for verifying platform chain endorsements. |
 
-`admin.key`: Private key of the bunker. This is used only for communicating with bunker. It's automatically generated.
+## Optional Environment Variables
 
-`admin.npubs`: Npubs that are allowed to administrate the bunker.
-
-`database`: URI of the database.
-
-`logs`: Path where the logs will be stored.
-
-`verbose`: If true, the bunker will log all messages.
-
-`version`: Version of the bunker. This is automatically generated.
-
-`nostr.relays`: Relays where the bunker will listen to for NIP-46 requests.
-
-### OAuth-like flow properties
-
-`baseUrl`: URL where the bunker can be accessed for OAuth-like authentication. This should be a URL where the bunker can be widely reached.
-
-`authPort`: The port where the bunker will listen for OAuth-like authentication. You should setup a reverse proxy from your main server to this port.
-
-`domains`: Domains that are allowed to create new users from. When a `create_account` is issued the NIP-05 (nostr address) issued should use one of these domains.
-
-`domains.$domain.nip05`: The file pointing to the domain's NIP-05 file.
-
-`keys`: Keys are stored in this object. Encrypted keys are stored as `keys.$keyId.iv` + `keys.$keyId.data`. Unecrypted (recoverable) keys are stored as `keys.$keyId.key`.
+| Variable | Type | Description |
+| :--- | :--- | :--- |
+| `SIGNER_UID` | Hex (64 chars) | Identity guard (`H(daemon signing public key)`). When present, startup fails if derived UID does not match. |
+| `ADMIN_UIDS` | Comma-separated hex | Allowed UIDs for administrative RPC commands (e.g. `create_account`, `rename_account`). |
+| `RELAYS` | Comma-separated URLs | Nostr relay endpoints to connect to for NIP-46 client requests and endorsements. |
+| `DATABASE_URL` | String URI | SQLite database location (default: `file:/app/config/nsecbunker.db`). |
+| `PORT` | Number | Port for daemon HTTP / status listener (default: `3000`). |
+| `AUDIT_LOG_PATH` | Path string | Filesystem path for audit log storage (default: `/app/logs/audit`). |
+| `VERITY_SERIALIZATION_PREFIX` | Number | Numeric event serialization prefix (injected by environment). |

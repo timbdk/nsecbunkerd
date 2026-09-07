@@ -1,6 +1,5 @@
 import * as fs from 'fs'
-import { Daemon } from '../dist/daemon/index.js'
-import { NDKPrivateKeySigner } from '@nostr-dev-kit/ndk'
+import { Daemon, isLegacyConfigFile } from '../dist/daemon/index.js'
 
 // Inject serialization prefix from environment (FATAL if missing)
 if (!process.env.VERITY_SERIALIZATION_PREFIX) {
@@ -36,27 +35,27 @@ if (configFlagIndex > -1 && process.argv.length > configFlagIndex + 1) {
     configFile = process.argv[configFlagIndex + 1]
 }
 
-let adminKey = process.env.ADMIN_KEY
-let adminNpubs = process.env.ADMIN_NPUBS ? process.env.ADMIN_NPUBS.split(',').map(r => r.trim()).filter(Boolean) : []
-
 if (fs.existsSync(configFile)) {
-    try {
-        const fileConfig = JSON.parse(fs.readFileSync(configFile, 'utf8'))
-        if (fileConfig?.admin?.key && !adminKey) adminKey = fileConfig.admin.key
-        if (fileConfig?.admin?.npubs && adminNpubs.length === 0) adminNpubs = fileConfig.admin.npubs
-    } catch (err) {
-        console.warn(`WARNING: Failed to parse config file ${configFile}`)
+  try {
+    const fileConfig = JSON.parse(fs.readFileSync(configFile, 'utf8'))
+    if (isLegacyConfigFile(fileConfig)) {
+      console.error(
+        '[FATAL] nsecbunker.json contains legacy key material (admin.key / keys.admin / npubs).\n' +
+        'Remove key material from nsecbunker.json. Daemon identity is now configured via:\n' +
+        '  SIGNER_DAEMON_KEY (ML-DSA-44 hex), SIGNER_DAEMON_ECDH_KEY (secp256k1 hex),\n' +
+        '  and SIGNER_UID (identity guard). Admin allow-list uses uid-based env vars.'
+      )
+      process.exit(1)
     }
+  } catch (err: any) {
+    console.warn(`WARNING: Failed to parse config file ${configFile}`)
+  }
 }
 
-if (!adminKey) {
-    console.log("Generating new ephemeral admin key for session...")
-    adminKey = NDKPrivateKeySigner.generate().privateKey
-}
-
-if (adminKey && adminKey.length !== 64 && !adminKey.startsWith('nsec')) {
-    adminKey = adminKey.trim()
-}
+const adminUids = (process.env.ADMIN_UIDS || '')
+  .split(',')
+  .map((r) => r.trim())
+  .filter(Boolean)
 
 const relays = (process.env.RELAYS || '').split(',').map((r) => r.trim()).filter(Boolean)
 if (relays.length === 0) {
@@ -69,8 +68,7 @@ const config = {
   },
   admin: {
     adminRelays: relays,
-    npubs: adminNpubs,
-    key: adminKey
+    allowedUids: adminUids
   },
   database: process.env.DATABASE_URL || `file:/app/config/nsecbunker.db`,
   logs: process.env.AUDIT_LOG_PATH || '/app/logs/audit',

@@ -2,8 +2,8 @@ import { checkpointService } from '../../services/CheckpointService.js'
 import prisma from '../../db.js'
 import { nip19, utils } from 'nostr-tools'
 const { bytesToHex } = utils
-import { NDKEvent, NDKPrivateKeySigner } from '@nostr-dev-kit/ndk'
-import { identityIdFromPublicKey } from 'verity-event-data-module'
+import { NDKEvent, NDKPrivateKeySigner, NDKMlDsaSigner } from '@nostr-dev-kit/ndk'
+import { identityIdFromPublicKey, keygen } from 'verity-event-data-module'
 import { Server } from 'bun'
 import { log, logError } from '../../lib/logger.js'
 
@@ -23,63 +23,102 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
       // CORS headers
       const headers = new Headers()
       headers.set('Access-Control-Allow-Origin', '*')
-      headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-      headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-      
+      headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+      headers.set('Access-Control-Allow-Headers', 'Content-Type')
+
       if (req.method === 'OPTIONS') {
         return new Response(null, { headers })
       }
 
-      if (url.pathname === '/health' && req.method === 'GET') {
-        if (daemon.isReady) {
-          return new Response('OK', { status: 200, headers })
-        } else {
-          return new Response('NOT READY', { status: 503, headers })
-        }
+      // Root endpoint
+      if (url.pathname === '/') {
+        return Response.json({
+          status: 'ok',
+          service: 'nsecbunker',
+          ready: daemon.isReady,
+          testing: isTesting
+        }, { headers })
       }
 
-      if (isTesting) {
-        // GET /testing/keys/:keyName
-        const keysMatch = url.pathname.match(/^\/testing\/keys\/([^/]+)$/)
-        if (keysMatch && req.method === 'GET') {
-          const keyName = keysMatch[1]
-          const key = await prisma.key.findUnique({ where: { keyName } })
-          if (!key) return Response.json({ error: 'Key not found' }, { status: 404, headers })
-          return Response.json({
-            keyName: key.keyName,
-            pubkey: key.pubkey,
-            createdAt: key.createdAt,
-            updatedAt: key.updatedAt
-          }, { headers })
-        }
+      // Health check endpoint
+      if (url.pathname === '/health') {
+        const healthy = daemon.isReady && daemon.ndk?.pool?.relays?.size > 0
+        return Response.json({
+          status: healthy ? 'healthy' : 'unhealthy',
+          ready: daemon.isReady,
+          relays: daemon.ndk?.pool?.relays?.size || 0
+        }, { status: healthy ? 200 : 503, headers })
+      }
 
+      // Testing endpoints (only available in testing/development environments)
+      if (isTesting) {
         // POST /testing/register
         if (url.pathname === '/testing/register' && req.method === 'POST') {
           try {
             const body = await req.json() as any
-            const { keyName, nsec, pubkey, clientPubkey, createdAt } = body
+            const { keyName, nsec, pubkey, clientPubkey, createdAt, identityKey, encKey } = body
             
-            if (!keyName || !nsec || !pubkey) {
-              return Response.json({ error: 'keyName, nsec and pubkey are required' }, { status: 400, headers })
+            if (!keyName || (!nsec && !identityKey) || (!pubkey && !identityKey)) {
+              return Response.json({ error: 'keyName, and key material are required' }, { status: 400, headers })
             }
 
-            const { storeKey } = await import('../../services/KeyService.js')
+            const { storeKey, retrieveKey } = await import('../../services/KeyService.js')
             const { allowAllRequestsFromKey } = await import('../lib/acl/index.js')
 
             checkpointService.broadcast('signer.testing.register.received', { keyName, clientPubkey })
 
-            let privateKeyHex: string
-            if (nsec.startsWith('nsec1')) {
-              const privateKeyBytes = (nip19.decode(nsec).data as unknown) as Uint8Array
-              privateKeyHex = bytesToHex(privateKeyBytes)
+            let identitySecretHex: string
+            let identityPubkeyHex: string
+            if (identityKey) {
+              identitySecretHex = identityKey.secretKey
+              identityPubkeyHex = identityKey.publicKey
+            } else if (nsec.startsWith('nsec1')) {
+              identitySecretHex = Buffer.from(nip19.decode(nsec).data as Uint8Array).toString('hex')
+              identityPubkeyHex = pubkey
             } else {
-              privateKeyHex = nsec
+              identitySecretHex = nsec
+              identityPubkeyHex = pubkey
             }
 
-            await storeKey(keyName, privateKeyHex, pubkey)
+            const isMlDsa = identitySecretHex.length === 5120 || identityPubkeyHex.length === 2624
+            const identityAlg = isMlDsa ? 'ml-dsa-44' : 'secp256k1-schnorr'
+
+            let encSecretHex: string | undefined
+            let encPubkeyHex: string | undefined
+            let shouldStoreEnc = false
+
+            if (encKey) {
+              encSecretHex = encKey.secretKey
+              encPubkeyHex = encKey.publicKey
+              shouldStoreEnc = true
+            } else if (isMlDsa) {
+              const existingEnc = await prisma.key.findFirst({
+                where: { parentKeyName: keyName, role: 'enc', status: 'ACTIVE' }
+              })
+              if (existingEnc) {
+                encPubkeyHex = existingEnc.pubkey
+                encSecretHex = await retrieveKey(existingEnc.keyName)
+              } else {
+                const generatedEnc = keygen('secp256k1-nip44')
+                encSecretHex = Buffer.from(generatedEnc.secretKey).toString('hex')
+                encPubkeyHex = Buffer.from(generatedEnc.publicKey).toString('hex')
+                shouldStoreEnc = true
+              }
+            } else {
+              // For classical accounts, the identity key functions as the encryption key
+              encSecretHex = identitySecretHex
+              encPubkeyHex = identityPubkeyHex
+            }
+
+            // Store identity row
+            await storeKey(keyName, identitySecretHex, identityPubkeyHex, identityAlg, 'identity')
+            // Store enc row if ML-DSA and newly generated or explicitly provided
+            if (isMlDsa && shouldStoreEnc && encSecretHex && encPubkeyHex) {
+              await storeKey(`${keyName}#enc`, encSecretHex, encPubkeyHex, 'secp256k1-nip44', 'enc', keyName)
+            }
             checkpointService.broadcast('signer.testing.key_stored', { keyName })
 
-            const testSigner = new NDKPrivateKeySigner(privateKeyHex)
+            const testSigner = isMlDsa ? new NDKMlDsaSigner(identitySecretHex) : new NDKPrivateKeySigner(identitySecretHex)
 
             if (clientPubkey) {
               await allowAllRequestsFromKey(clientPubkey, keyName, 'connect', undefined, 'test-client')
@@ -92,33 +131,25 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
               log.http(`🧪 Testing: authorized client ${clientPubkey.slice(0, 16)}... for key ${keyName}`)
               checkpointService.broadcast('signer.testing.client_authorized', { keyName, clientPubkey })
 
-              // Publish Kind 24135 identity attestation so the relay can resolve
-              // devicePubkey → userPubkey without the Kind 24133 fallback.
-              //
-              // This mirrors the production authorize_client flow:
-              //   - 'client' tag → device key being attested
-              //   - 'user' tag   → user identity being attested
-              // The relay reads these tags and calls resolveIdentity().
               const attestationPayload = JSON.stringify({ id: 'short-circuit', result: 'attestation' })
-              const user = await testSigner.user()
-              const encryptedAttestation = await testSigner.encrypt(user, attestationPayload, 'nip44')
+              const encSigner = new NDKPrivateKeySigner(encSecretHex)
+              const clientUser = new (await import('@nostr-dev-kit/ndk')).NDKUser({ pubkey: clientPubkey })
+              const encryptedAttestation = await encSigner.encrypt(clientUser, attestationPayload, 'nip44')
 
               const { NDKRelaySet } = await import('@nostr-dev-kit/ndk')
-              const { identityIdFromPublicKey } = await import('verity-event-data-module')
-              const uid = identityIdFromPublicKey(pubkey)
-              const userPubkeyBytes = Buffer.from(pubkey, 'hex')
-              const keyField = `secp256k1-schnorr:${userPubkeyBytes.toString('base64')}`
-
+              const uid = identityIdFromPublicKey(identityPubkeyHex)
+              const userPubkeyBytes = Buffer.from(identityPubkeyHex, 'hex')
+              const keyField = (isMlDsa ? 'ml-dsa-44:' : 'secp256k1-schnorr:') + userPubkeyBytes.toString('base64')
 
               const attestationEvent = new NDKEvent(daemon.ndk, {
                 kind: 24135,
                 content: encryptedAttestation,
                 created_at: createdAt || Math.floor(Date.now() / 1000),
                 tags: [
-                  ['p', pubkey],
-                  ['policy', 'allow', 'user', pubkey],
+                  ['p', uid],
+                  ['policy', 'allow', 'user', uid],
                   ['client', clientPubkey],
-                  ['user', pubkey]
+                  ['user', uid]
                 ]
               } as any)
               attestationEvent.uid = uid
@@ -129,7 +160,7 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
               await attestationEvent.publish(relaySet)
               checkpointService.broadcast('signer.testing.identity_attested', {
                 devicePubkey: clientPubkey.substring(0, 16),
-                userPubkey: pubkey.substring(0, 16)
+                userPubkey: identityPubkeyHex.substring(0, 16)
               })
             }
 
@@ -140,11 +171,12 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
             }
             const genesisEntryId = await publishGenesisEntry(
               testSigner,
-              pubkey,
+              identityPubkeyHex,
               daemon.config.nostr.relays,
               daemonServiceEntryId,
               createdAt,
-              daemon.ndk
+              daemon.ndk,
+              isMlDsa ? encPubkeyHex : undefined
             )
 
             const { publishUsernameEvent } = await import('../lib/username-event.js')
@@ -152,14 +184,14 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
             await publishUsernameEvent(
               testSigner,
               usernameFromKeyName,
-              pubkey,
+              identityPubkeyHex,
               daemon.config.nostr.relays,
               createdAt,
               genesisEntryId,
               daemon.ndk
             )
 
-            daemon.loadNsec(keyName, privateKeyHex)
+            await daemon.loadKey(keyName, identitySecretHex, identityAlg)
 
             log.http(`🧪 Testing: registered key ${keyName} (genesis: ${genesisEntryId})`)
             checkpointService.broadcast('signer.testing.register.completed', { keyName })
@@ -167,7 +199,7 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
             return Response.json({
               success: true,
               keyName,
-              pubkey,
+              pubkey: identityPubkeyHex,
               genesisEntryId,
               clientAuthorized: !!clientPubkey
             }, { status: 201, headers })
@@ -211,7 +243,7 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
               const { publishDelegateEntry } = await import('../lib/keychain-event.js')
               const nsec = await retrieveKey(keyName)
               if (!nsec) throw new Error(`Private key not found for ${keyName}`)
-              const userSigner = new NDKPrivateKeySigner(nsec)
+              const userSigner = key.algorithm === 'ml-dsa-44' ? new NDKMlDsaSigner(nsec) : new NDKPrivateKeySigner(nsec)
               const daemonServiceEntryId = daemon.platformServiceEntryId
               if (!daemonServiceEntryId) {
                 throw new Error('Signer daemon has no verified platformServiceEntryId')
@@ -259,7 +291,7 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
             const { publishRevokeEntry } = await import('../lib/keychain-event.js')
             const nsec = await retrieveKey(keyName)
             if (!nsec) throw new Error(`Private key not found for ${keyName}`)
-            const userSigner = new NDKPrivateKeySigner(nsec)
+            const userSigner = key.algorithm === 'ml-dsa-44' ? new NDKMlDsaSigner(nsec) : new NDKPrivateKeySigner(nsec)
             const daemonServiceEntryId = daemon.platformServiceEntryId
             if (!daemonServiceEntryId) {
               throw new Error('Signer daemon has no verified platformServiceEntryId')
@@ -337,21 +369,46 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
           }
         }
 
+        // GET /testing/keys/:keyName
+        if (url.pathname.startsWith('/testing/keys/') && req.method === 'GET') {
+          try {
+            const keyName = decodeURIComponent(url.pathname.slice('/testing/keys/'.length))
+            const key = await prisma.key.findFirst({ where: { keyName, role: 'identity', status: 'ACTIVE' } })
+            if (!key) return Response.json({ error: 'Key not found' }, { status: 404, headers })
+            return Response.json({ id: key.id, keyName: key.keyName, pubkey: key.pubkey, algorithm: key.algorithm, role: key.role, createdAt: key.createdAt, updatedAt: key.updatedAt }, { status: 200, headers })
+          } catch (e: any) {
+            return Response.json({ error: e.message }, { status: 500, headers })
+          }
+        }
+
+        // DELETE /testing/keys/:keyName
+        if (url.pathname.startsWith('/testing/keys/') && req.method === 'DELETE') {
+          try {
+            const keyName = decodeURIComponent(url.pathname.slice('/testing/keys/'.length))
+            await prisma.key.deleteMany({ where: { OR: [{ keyName }, { parentKeyName: keyName }] } })
+            return Response.json({ success: true }, { status: 200, headers })
+          } catch (e: any) {
+            return Response.json({ error: e.message }, { status: 500, headers })
+          }
+        }
+
         // POST /testing/sign-challenge
         if (url.pathname === '/testing/sign-challenge' && req.method === 'POST') {
           try {
             const body = await req.json() as any
             const { keyName, challenge } = body
             
+            const key = await prisma.key.findUnique({ where: { keyName } })
             const { retrieveKey } = await import('../../services/KeyService.js')
             const nsec = await retrieveKey(keyName)
             if (!nsec) return Response.json({ error: 'Key not found' }, { status: 404, headers })
 
-            const signer = new NDKPrivateKeySigner(nsec)
+            const isMlDsa = key?.algorithm === 'ml-dsa-44'
+            const signer = isMlDsa ? new NDKMlDsaSigner(nsec) : new NDKPrivateKeySigner(nsec)
             const user = await signer.user()
             const userPubkeyBytes = Buffer.from(user.pubkey, 'hex')
-            const keyField = 'secp256k1-schnorr:' + userPubkeyBytes.toString('base64')
-            const uid = identityIdFromPublicKey(keyField)
+            const keyField = (isMlDsa ? 'ml-dsa-44:' : 'secp256k1-schnorr:') + userPubkeyBytes.toString('base64')
+            const uid = identityIdFromPublicKey(user.pubkey)
 
             const event = new NDKEvent(daemon.ndk, {
               kind: 1,

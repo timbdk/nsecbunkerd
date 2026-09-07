@@ -38,7 +38,8 @@ export default async function revokeUser(admin: AdminInterface, req: ValidatedRp
     })
 
     // Include user-only attestation tag so the relay clears ALL device mappings for this user
-    const attestationTags = [['user', userPubkey]]
+    const userUid = /^[0-9a-f]{64}$/i.test(userPubkey) ? userPubkey : identityIdFromPublicKey(userPubkey)
+    const attestationTags = [['user', userUid]]
     return admin.rpc.sendResponse(req.id, req.pubkey, 'revoked', KIND_ADMIN_RESPONSE, undefined, attestationTags)
   } catch (e: any) {
     log.admin(`Error revoking user: ${e.message}`)

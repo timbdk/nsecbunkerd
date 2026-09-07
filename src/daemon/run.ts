@@ -1,17 +1,28 @@
-import NDK, { NDKEvent, NDKPrivateKeySigner, NDKRelayAuthPolicies, NDKRelaySet, Nip46PermitCallback, Nip46PermitCallbackParams } from '@nostr-dev-kit/ndk'
+import NDK, {
+  NDKEvent,
+  NDKMlDsaSigner,
+  NDKPrivateKeySigner,
+  NDKRelayAuthPolicies,
+  NDKRelaySet,
+  NDKTransportCredential,
+  Nip46PermitCallback,
+  Nip46PermitCallbackParams
+} from '@nostr-dev-kit/ndk'
 import { log, auditSigningRequest, logStartup, logError } from '../lib/logger.js'
-import { nip19, utils } from 'nostr-tools'
-const { bytesToHex } = utils
 import { Backend } from './backend/index.js'
 import { IMethod, checkIfPubkeyAllowed } from './lib/acl/index.js'
 import AdminInterface from './admin/index.js'
-import { IConfig } from '../config/index.js'
+import { IConfig, validateDaemonEnvironment, isLegacyConfigFile } from '../config/index.js'
 import { NDKRpcRequest } from '@nostr-dev-kit/ndk'
 import prisma from '../db.js'
 // Force rebuild for logging
 import { DaemonConfig } from './index.js'
 import { checkpointService } from '../services/CheckpointService.js'
 import { startHttpServer } from './http/server.js'
+import { verifyPlatformChain, findServiceEntry, publicKeyFromSecret } from 'verity-event-data-module'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js'
+import { KeyFamily, resolveKeyFamily } from '../services/KeyService.js'
 
 // Inject serialization prefix from environment (FATAL if missing)
 if (!process.env.VERITY_SERIALIZATION_PREFIX) {
@@ -22,7 +33,6 @@ if (!process.env.VERITY_SERIALIZATION_PREFIX) {
 
 export type Key = {
   name: string
-  npub?: string
 }
 
 export type Session = {
@@ -33,42 +43,62 @@ export type Session = {
   lastUsedAt?: Date
 }
 
-
+function extractEventKind(method: string, payload?: any): number | undefined {
+  if (method !== 'sign_event' || !payload) return undefined
+  try {
+    if (Array.isArray(payload) && typeof payload[0] === 'string') {
+      const event = JSON.parse(payload[0])
+      return typeof event.kind === 'number' ? event.kind : undefined
+    } else if (typeof payload === 'object' && typeof payload.kind === 'number') {
+      return payload.kind
+    }
+  } catch {}
+  return undefined
+}
 
 /**
- * Called by the NDKNip46Backend when an action requires authorization
+ * Called by the NDKNip46Backend when an action requires authorization.
  * @param keyName -- Key attempting to be used
- * @param adminInterface
- * @returns
  */
-function signingAuthorizationCallback(keyName: string, adminInterface: AdminInterface): Nip46PermitCallback {
-  return async (p: Nip46PermitCallbackParams): Promise<boolean> => {
-    const { id, method, pubkey: remotePubkey, params: payload } = p
-    const msg = `Request ${id}: ${method} by ${remotePubkey.slice(0, 16)}... for ${keyName}`
-    log.signing(msg)
+function signingAuthorizationCallback(keyName: string): Nip46PermitCallback {
+  return async (params: Nip46PermitCallbackParams) => {
+    log.signing(`🔑 Authorization requested for ${keyName}: ${params.method}`)
+    const eventKind = extractEventKind(params.method, params.params)
 
     try {
-      const keyAllowed = await checkIfPubkeyAllowed(keyName, remotePubkey, method as IMethod, payload)
+      // Fast path: ACL allows without prompt
+      const isAllowed = (await checkIfPubkeyAllowed(keyName, params.pubkey, params.method as IMethod, params.params)) ?? false
 
-      if (keyAllowed === true || keyAllowed === false) {
-        // Audit log for signing decisions
-        auditSigningRequest({
-          timestamp: new Date().toISOString(),
-          keyName,
-          clientPubkey: remotePubkey,
-          method,
-          allowed: keyAllowed
-        })
-        return keyAllowed
+      auditSigningRequest({
+        keyName,
+        clientPubkey: params.pubkey,
+        method: params.method,
+        eventKind,
+        allowed: isAllowed,
+        reason: isAllowed ? 'Allowed via ACL' : 'Blocked by ACL',
+        timestamp: new Date().toISOString()
+      })
+
+      if (isAllowed) {
+        log.signing(`✅ Allowed via ACL: ${keyName} for ${params.method}`)
+        return true
       }
 
-      // If undefined (no policy matched), deny by default in Verity
+      log.signing(`❌ Blocked by ACL: ${keyName} for ${params.method} (device: ${params.pubkey.slice(0, 8)}...)`)
       return false
-    } catch (e: any) {
-      logError('signing', `Authorization callback error for ${keyName}`, e)
+    } catch (err: any) {
+      logError(`ACL check failed for ${keyName} / ${params.method}: ${err?.message ?? err}`)
+      auditSigningRequest({
+        keyName,
+        clientPubkey: params.pubkey,
+        method: params.method,
+        eventKind,
+        allowed: false,
+        reason: `ACL check failed: ${err?.message ?? err}`,
+        timestamp: new Date().toISOString()
+      })
+      return false
     }
-
-    return false
   }
 }
 
@@ -78,9 +108,9 @@ export default async function run(config: DaemonConfig) {
 }
 
 export class Daemon {
-  public config: DaemonConfig
-  private adminInterface: AdminInterface
   public ndk: NDK
+  public config: DaemonConfig
+  public adminInterface: AdminInterface
   public httpServer: any
   public isReady: boolean = false
   public platformId: string = ''
@@ -88,16 +118,16 @@ export class Daemon {
 
   constructor(config: DaemonConfig) {
     this.config = config
-    const registrarNpub = process.env.REGISTRAR_UID || process.env.REGISTRAR_NPUB
+    const registrarUid = process.env.REGISTRAR_UID
     this.adminInterface = new AdminInterface(
       {
         ...config.admin,
-        registrarNpub
+        registrarUid
       },
       config
     )
 
-    this.adminInterface.loadNsec = this.loadNsec.bind(this)
+    this.adminInterface.loadKey = this.loadKey.bind(this)
     this.adminInterface.getPlatformServiceEntryId = () => this.platformServiceEntryId
 
     this.ndk = new NDK({
@@ -105,15 +135,21 @@ export class Daemon {
       enableOutboxModel: false,
       autoDeviceDiscovery: false,
       autoFetchUserMutelist: false,
+      autoConnectUserRelays: false,
       cacheAdapter: undefined
     })
 
     // Assign a signer to the NDK instance so it can handle NIP-42 AUTH challenges
-    // Using the master key for the daemon's own connection authentication
-    log.daemon(`SIGNER_MASTER_KEY: ${process.env.SIGNER_MASTER_KEY ? 'present' : 'missing'}`)
-    if (process.env.SIGNER_MASTER_KEY) {
-      log.daemon('Daemon NDK Signer configured with Master Key')
-      this.ndk.signer = new NDKPrivateKeySigner(process.env.SIGNER_MASTER_KEY)
+    // Using SIGNER_DAEMON_KEY + SIGNER_DAEMON_ECDH_KEY for the daemon's own connection authentication
+    log.daemon(`SIGNER_DAEMON_KEY: ${process.env.SIGNER_DAEMON_KEY ? 'present' : 'missing'}`)
+    if (process.env.SIGNER_DAEMON_KEY) {
+      log.daemon('Daemon NDK Signer configured with SIGNER_DAEMON_KEY')
+      const daemonSigner = new NDKMlDsaSigner(process.env.SIGNER_DAEMON_KEY)
+      if (!process.env.SIGNER_DAEMON_ECDH_KEY) {
+        throw new Error('SIGNER_DAEMON_ECDH_KEY environment variable not set')
+      }
+      const daemonEcdhSigner = new NDKPrivateKeySigner(process.env.SIGNER_DAEMON_ECDH_KEY)
+      this.ndk.signer = new NDKTransportCredential(daemonSigner, daemonEcdhSigner, this.ndk)
       // Enable NIP-42 auto-auth so the relay accepts writes from this connection
       this.ndk.relayAuthDefaultPolicy = NDKRelayAuthPolicies.signIn({ ndk: this.ndk })
     }
@@ -170,55 +206,58 @@ export class Daemon {
   }
 
   async startKeys() {
-    // Load all encrypted keys from SQLite database
-    const { retrieveKey } = await import('../services/KeyService.js')
-
-    const keys = await prisma.key.findMany({
+    const identityRows = await prisma.key.findMany({
       where: {
-        status: 'ACTIVE'
+        status: 'ACTIVE',
+        role: 'identity'
       },
       select: { keyName: true }
     })
 
-    log.keys(`Starting ${keys.length} keys from database`)
+    log.keys(`Starting ${identityRows.length} identity key families from database`)
 
-    for (const key of keys) {
+    for (const row of identityRows) {
       try {
-        const privateKeyHex = await retrieveKey(key.keyName)
-        if (privateKeyHex) {
-          log.keys(`Starting key: ${key.keyName}`)
-          await this.startKey(key.keyName, privateKeyHex)
+        const family = await resolveKeyFamily(row.keyName)
+        if (family) {
+          log.keys(`Starting key family for: ${row.keyName}`)
+          await this.startFamily(family)
         } else {
-          logError('keys', `Could not decrypt key: ${key.keyName}`)
+          logError('keys', `Could not resolve key family for: ${row.keyName}`)
         }
       } catch (e: any) {
-        logError('keys', `Failed to start key ${key.keyName}`, e)
+        logError('keys', `Failed to start key family ${row.keyName}`, e)
       }
     }
   }
 
   async start() {
-    // Validate SIGNER_MASTER_KEY is set
-    const masterKey = process.env.SIGNER_MASTER_KEY
-    if (!masterKey) {
-      logError('daemon', 'CRITICAL: SIGNER_MASTER_KEY environment variable not set')
-      logError('daemon', 'This key must be provided and should never touch disk.')
+    // Validate daemon configuration against legacy shapes
+    if (this.config && isLegacyConfigFile(this.config)) {
+      logError('daemon', 'FATAL: Daemon configuration contains legacy key material (admin.key / keys.admin / npubs).')
       process.exit(1)
     }
-    if (masterKey.length !== 64) {
-      logError('daemon', 'CRITICAL: SIGNER_MASTER_KEY must be a 64-character hex string (256 bits)')
-      process.exit(1)
-    }
-    logStartup('SIGNER_MASTER_KEY validated')
 
-    // Validate VERITY_PLATFORM_ID is set
-    const platformId = process.env.VERITY_PLATFORM_ID
-    if (!platformId || platformId.length !== 64) {
-      logError('daemon', 'CRITICAL: VERITY_PLATFORM_ID environment variable not set or invalid (must be 64-hex SHA-256)')
+    // Validate daemon environment variables against SSOT requirements
+    const envResult = validateDaemonEnvironment(process.env)
+    if (!envResult.valid) {
+      logError('daemon', envResult.error!)
       process.exit(1)
     }
+
+    logStartup('SIGNER_KEK validated')
+    logStartup('SIGNER_DAEMON_KEY validated')
+    logStartup('SIGNER_DAEMON_ECDH_KEY validated')
+    if (process.env.SIGNER_UID) {
+      logStartup('SIGNER_UID verified against derived daemon key')
+    }
+
+    const daemonKey = process.env.SIGNER_DAEMON_KEY!
+    const daemonPubkey = publicKeyFromSecret('ml-dsa-44', daemonKey)
+    const daemonKeyHash = bytesToHex(sha256(daemonPubkey))
+    const platformId = process.env.VERITY_PLATFORM_ID!
     this.platformId = platformId
-    logStartup(`Platform ID configured: ${platformId.substring(0, 16)}...`)
+    logStartup(`Platform ID configured: ${this.platformId.substring(0, 16)}...`)
 
     // Validate stored encrypted keys (if any)
     try {
@@ -260,7 +299,7 @@ export class Daemon {
         await this.ndk.connect(5000)
         connected = true
         const user = await this.ndk.signer?.user()
-        logStartup(`nsecBunker connected and ready: ${user?.npub || 'unknown identity'} after ${attempts} attempts`)
+        logStartup(`nsecBunker connected and ready: ${user?.pubkey?.substring(0, 16) || 'unknown identity'} after ${attempts} attempts`)
       } catch (e: any) {
         logError('daemon', `Initial connection failed: ${e.message}`)
         log.daemon(`Retrying in ${RETRY_DELAY_MS}ms...`)
@@ -268,15 +307,18 @@ export class Daemon {
       }
     }
 
-    // Platform chain verification with retry loop
-    const { schnorr } = await import('@noble/curves/secp256k1.js')
-    const { sha256 } = await import('@noble/hashes/sha2.js')
-    const { hexToBytes, bytesToHex } = await import('@noble/hashes/utils.js')
-    const { verifyPlatformChain, findServiceEntry } = await import('verity-event-data-module')
+    // Wait for relay authentication to complete before querying platform chain
+    const NDK_RELAY_STATUS_AUTHENTICATED = 8
+    const relays = Array.from(this.ndk.pool.relays.values()) as any[]
+    for (const poolRelay of relays) {
+      let authAttempts = 0
+      while (poolRelay && poolRelay.status < NDK_RELAY_STATUS_AUTHENTICATED && authAttempts < 50) {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+        authAttempts++
+      }
+    }
 
-    const masterKeyPubkey = schnorr.getPublicKey(hexToBytes(masterKey))
-    const daemonKeyHash = bytesToHex(sha256(masterKeyPubkey))
-
+    // Platform chain verification with retry loop (matching ML-DSA daemonKeyHash)
     let platformVerified = false
     let platformAttempts = 0
 
@@ -338,35 +380,38 @@ export class Daemon {
   }
 
   /**
-   * Method to start a key's backend
-   * @param name Name of the key
-   * @param nsec NSec of the key
+   * Start a key family backend
    */
-  async startKey(name: string, nsec: string) {
-    const cb = signingAuthorizationCallback(name, this.adminInterface)
-    let hexpk: string
-
-    if (nsec.startsWith('nsec1')) {
-      try {
-        const key = new NDKPrivateKeySigner(nsec)
-        hexpk = key.privateKey!
-      } catch (e: any) {
-        logError('keys', `Error loading key ${name}`, e)
-        return
-      }
-    } else {
-      hexpk = nsec
-    }
-
-    const backend = new Backend(this.ndk, hexpk, cb, this.config)
+  async startFamily(family: KeyFamily) {
+    const cb = signingAuthorizationCallback(family.identity.keyName)
+    const backend = new Backend(this.ndk, family, cb, this.config)
     await backend.start()
   }
 
-
-
-  loadNsec(keyName: string, nsec: string) {
-    this.startKey(keyName, nsec).catch((e) => {
-      logError('keys', `ERROR: Failed to start key ${keyName}:`, e)
-    })
+  /**
+   * Load and start a key
+   */
+  async loadKey(name: string, rawHex: string, algorithm: string = 'ml-dsa-44') {
+    const family = await resolveKeyFamily(name)
+    if (family) {
+      await this.startFamily(family)
+    } else {
+      const cb = signingAuthorizationCallback(name)
+      const derivedPubkey = bytesToHex(publicKeyFromSecret(algorithm, rawHex))
+      const backend = new Backend(
+        this.ndk,
+        {
+          identity: {
+            keyName: name,
+            pubkey: derivedPubkey,
+            privateKeyHex: rawHex,
+            algorithm
+          }
+        },
+        cb,
+        this.config
+      )
+      await backend.start()
+    }
   }
 }

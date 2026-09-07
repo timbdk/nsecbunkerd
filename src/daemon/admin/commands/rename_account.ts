@@ -1,4 +1,4 @@
-import { NDKPrivateKeySigner } from '@nostr-dev-kit/ndk'
+import { NDKMlDsaSigner, NDKPrivateKeySigner } from '@nostr-dev-kit/ndk'
 import { KIND_ADMIN_RESPONSE, type RenameAccountInput } from 'verity-event-data-module'
 import AdminInterface, { type ValidatedRpcRequest } from '../index.js'
 import { IConfig } from '../../../config/index.js'
@@ -36,17 +36,19 @@ export default async function renameAccount(
 
   const { identityIdFromPublicKey } = await import('verity-event-data-module')
 
-  // Retrieve existing key from DB by pubkey, keyName, or derived identity UID
+  // Retrieve existing key from DB by pubkey, keyName, or derived identity UID (strictly role: 'identity')
   let keyRecord = await prisma.key.findFirst({
-    where: { pubkey }
+    where: { pubkey, role: 'identity' }
   })
   if (!keyRecord) {
     keyRecord = await prisma.key.findFirst({
-      where: { keyName: pubkey }
+      where: { keyName: pubkey, role: 'identity' }
     })
   }
   if (!keyRecord) {
-    const allKeys = await prisma.key.findMany()
+    const allKeys = await prisma.key.findMany({
+      where: { role: 'identity' }
+    })
     keyRecord = allKeys.find((k: any) => identityIdFromPublicKey(k.pubkey) === pubkey) || null
   }
 
@@ -62,7 +64,7 @@ export default async function renameAccount(
     throw new Error(`Internal error: key retrieval failed`)
   }
 
-  const userSigner = new NDKPrivateKeySigner(nsec)
+  const userSigner = new NDKMlDsaSigner(nsec)
   
   // Actually verify that the derived pubkey is the same (sanity check)
   const userObj = await userSigner.user()
@@ -77,9 +79,13 @@ export default async function renameAccount(
   // Query own chain to find current identity entry id for kid
   const { queryCurrentIdentityEntry } = await import('../../lib/keychain-event.js')
   const currentIdentity = await queryCurrentIdentityEntry(admin.ndk, derivedUid)
+  if (!currentIdentity?.id) {
+    logError('admin', `rename_account failed: No active identity key entry found for ${derivedUid}`)
+    throw new Error(`rename_account failed: No active identity key entry found for ${derivedUid}`)
+  }
 
   // Publish the new Kind 415 event with kid
-  await publishUsernameEvent(userSigner, newUsername, userObj.pubkey, relayUrls, undefined, currentIdentity?.id, admin.ndk)
+  await publishUsernameEvent(userSigner, newUsername, userObj.pubkey, relayUrls, undefined, currentIdentity.id, admin.ndk)
 
   log.admin(`rename_account completed for pubkey=${pubkey}, username=${newUsername}`)
 

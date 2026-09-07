@@ -89,7 +89,8 @@ export default async function authorizeClient(admin: AdminInterface, req: Valida
     })
 
     // Include identity attestation tags so the relay can map device → user
-    const attestationTags = [['client', clientPubkey], ['user', key.pubkey]]
+    const userUid = identityIdFromPublicKey(key.pubkey)
+    const attestationTags = [['client', clientPubkey], ['user', userUid]]
     return admin.rpc.sendResponse(req.id, req.pubkey, 'authorized', KIND_ADMIN_RESPONSE, undefined, attestationTags)
   } catch (e: any) {
     log.admin(`Error authorizing client: ${e.message}`)

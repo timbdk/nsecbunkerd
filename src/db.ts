@@ -1,5 +1,4 @@
-import { PrismaClient } from '@prisma/client'
-import { PrismaLibSql } from '@prisma/adapter-libsql'
+import type { PrismaClient } from '@prisma/client'
 
 // Only enable verbose query logging in testing/development
 const logLevel =
@@ -23,6 +22,11 @@ let _prisma: PrismaClient | null = null
 function getPrisma(): PrismaClient {
   if (_prisma) return _prisma
 
+  // Dynamically load Prisma dependencies so importing modules that reference
+  // db (e.g. in unit tests) does not fail if Prisma client is not pre-generated.
+  const { PrismaClient } = require('@prisma/client')
+  const { PrismaLibSql } = require('@prisma/adapter-libsql')
+
   const url = process.env.DATABASE_URL ?? 'file:/app/config/nsecbunker.db'
 
   // Pass the config object directly — PrismaLibSql calls createClient itself
@@ -32,10 +36,24 @@ function getPrisma(): PrismaClient {
   return _prisma
 }
 
+export function setPrismaClient(client: PrismaClient | null): void {
+  _prisma = client
+}
+
 // Proxy keeps every call-site's existing `prisma.xxx` syntax intact.
 const prisma = new Proxy({} as PrismaClient, {
   get(_target, prop) {
+    if (_prisma && prop in _prisma) {
+      return (_prisma as any)[prop]
+    }
     return (getPrisma() as any)[prop]
+  },
+  set(_target, prop, value) {
+    if (!_prisma) {
+      _prisma = {} as any
+    }
+    ;(_prisma as any)[prop] = value
+    return true
   }
 })
 

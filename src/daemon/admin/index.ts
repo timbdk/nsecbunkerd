@@ -1,15 +1,17 @@
 import NDK, {
   NDKEvent,
   NDKKind,
+  NDKMlDsaSigner,
   NDKPrivateKeySigner,
   NDKRelayAuthPolicies,
   NDKRpcRequest,
   NDKRpcResponse,
+  NDKSigner,
+  NDKTransportCredential,
   NDKUser,
   NostrEvent,
   NDKNostrRpc
 } from '@nostr-dev-kit/ndk'
-import { nip19 } from 'nostr-tools'
 import {
   KIND_ADMIN_COMMAND, KIND_ADMIN_RESPONSE,
   AdminCommandDefinition, identityIdFromPublicKey
@@ -18,38 +20,30 @@ import {
 export interface ValidatedRpcRequest<T> extends NDKRpcRequest {
   validatedParams: T
 }
-import { Key, Session } from '../run.js'
-import { allowAllRequestsFromKey } from '../lib/acl/index.js'
-import prisma from '../../db.js'
+import { IConfig } from '../../config/index.js'
+import { log, logError } from '../../lib/logger.js'
+import { checkpointService } from '../../services/CheckpointService.js'
 import createAccount from './commands/create_account.js'
 import authorizeClient from './commands/authorize_client.js'
 import ping from './commands/ping.js'
 import revokeClient from './commands/revoke_client.js'
 import revokeUser from './commands/revoke_user.js'
 import renameAccount from './commands/rename_account.js'
-import { validateRequestFromAdmin } from './validations/request-from-admin.js'
-import { IConfig } from '../../config/index.js'
-import { log, logError } from '../../lib/logger.js'
-import { checkpointService } from '../../services/CheckpointService.js'
 
 export type IAdminOpts = {
-  npubs: string[]
-  registrarNpub?: string
+  allowedUids?: string[]
   registrarUid?: string
   adminRelays: string[]
-  key: string
 }
 
-
 class AdminInterface {
-  private npubs: string[]
+  private allowedUids: string[]
   public ndk: NDK
   private signerUser?: NDKUser
-  private rpcSigner: NDKPrivateKeySigner
+  private rpcSigner: NDKSigner
   readonly rpc: NDKNostrRpc
-  public loadNsec?: (keyName: string, nsec: string) => void
+  public loadKey?: (keyName: string, rawHex: string, algorithm?: string) => void
   public getPlatformServiceEntryId?: () => string | null
-  public masterKey: string
 
   public readonly opts: IAdminOpts
   private configData: IConfig
@@ -58,25 +52,33 @@ class AdminInterface {
     log.admin('AdminInterface Constructor Called')
     this.opts = opts
     this.configData = configData
-    this.npubs = opts.npubs || []
-    this.masterKey = configData.masterKey || process.env.SIGNER_MASTER_KEY || ''
+    this.allowedUids = opts.allowedUids || []
 
-    const connectionSigner = this.masterKey
-      ? new NDKPrivateKeySigner(this.masterKey)
-      : new NDKPrivateKeySigner(opts.key)
+    const daemonKey = process.env.SIGNER_DAEMON_KEY
+    if (!daemonKey) {
+      throw new Error('SIGNER_DAEMON_KEY environment variable not set')
+    }
+    const daemonSigner = new NDKMlDsaSigner(daemonKey)
+    const daemonEcdhKey = process.env.SIGNER_DAEMON_ECDH_KEY
+    if (!daemonEcdhKey) {
+      throw new Error('SIGNER_DAEMON_ECDH_KEY environment variable not set')
+    }
+    const daemonEcdhSigner = new NDKPrivateKeySigner(daemonEcdhKey)
+    const credential = new NDKTransportCredential(daemonSigner, daemonEcdhSigner)
 
-    this.rpcSigner = new NDKPrivateKeySigner(opts.key)
+    this.rpcSigner = credential
 
     this.ndk = new NDK({
       explicitRelayUrls: opts.adminRelays,
       enableOutboxModel: false,
-      signer: connectionSigner
+      autoConnectUserRelays: false,
+      signer: credential
     })
     // Enable NIP-42 auto-auth for admin relay connections
     this.ndk.relayAuthDefaultPolicy = NDKRelayAuthPolicies.signIn({ ndk: this.ndk })
     this.rpcSigner.user().then((user: NDKUser) => {
-      this.signerUser = user
       this.validateAdminIdentity(user)
+      this.signerUser = user
       this.connect()
     })
 
@@ -87,13 +89,13 @@ class AdminInterface {
     return this.configData
   }
 
-  public async npub() {
-    return (await this.rpcSigner.user()).npub
+  public async uid() {
+    return identityIdFromPublicKey((await this.rpcSigner.user()).pubkey)
   }
 
   private connect() {
-    if (this.npubs.length <= 0 && !this.opts.registrarNpub) {
-      log.admin(`❌ Admin interface not starting because no admin npubs were provided`)
+    if (this.allowedUids.length <= 0 && !this.opts.registrarUid) {
+      log.admin(`❌ Admin interface not starting because no admin uids/registrarUid were provided`)
       return
     }
 
@@ -108,7 +110,7 @@ class AdminInterface {
         const signerUid = identityIdFromPublicKey(this.signerUser!.pubkey)
         this.rpc.subscribe({
           kinds: [KIND_ADMIN_COMMAND as number],
-          '#p': [this.signerUser!.pubkey, signerUid]
+          '#p': [signerUid]
         })
 
         this.rpc.on('request', (req) => this.handleRequest(req))
@@ -185,66 +187,80 @@ class AdminInterface {
   }
 
   private async validateRequest(req: NDKRpcRequest): Promise<void> {
-    const registrarIdentifier = this.opts?.registrarUid || this.opts?.registrarNpub
-    if (registrarIdentifier) {
-      let registrarPubkey: string | undefined
-      let registrarUid: string | undefined
-      if (/^[0-9a-fA-F]{64}$/.test(registrarIdentifier)) {
-        registrarPubkey = registrarIdentifier
-        registrarUid = registrarIdentifier
-      } else if (registrarIdentifier.startsWith('npub1')) {
-        try {
-          registrarPubkey = new NDKUser({ npub: registrarIdentifier }).pubkey
-          registrarUid = identityIdFromPublicKey(registrarPubkey)
-        } catch {}
-      }
-      if ((registrarPubkey && req.pubkey === registrarPubkey) || (registrarUid && req.pubkey === registrarUid)) {
-        const payloads = AdminCommandDefinition.describe().rpcPayloads
-        const allowedMethods = payloads 
-          ? Object.entries(payloads)
-              .filter(([, def]) => def.status === 'implemented')
-              .map(([name]) => name)
-          : []
-        if (allowedMethods.includes(req.method)) {
-          log.admin(`✅ Allowing ${req.method} from Restricted Registrar: ${registrarIdentifier}`)
-          return
-        } else {
-          log.admin(`⛔ Denying ${req.method} from Restricted Registrar: ${registrarIdentifier}`)
-          throw new Error('Registrar is only allowed to call: ' + allowedMethods.join(', '))
-        }
+    const callerKeys = new Set<string>()
+    if (req.pubkey) {
+      callerKeys.add(req.pubkey)
+      try {
+        callerKeys.add(identityIdFromPublicKey(req.pubkey))
+      } catch {
+        // ignore if not valid key material
       }
     }
 
-    if (!(await validateRequestFromAdmin(req, this.npubs))) {
-      throw new Error('You are not designated to administrate this bunker')
+    const registrarKeys = new Set<string>()
+    if (this.opts?.registrarUid) {
+      registrarKeys.add(this.opts.registrarUid)
+      try {
+        registrarKeys.add(identityIdFromPublicKey(this.opts.registrarUid))
+      } catch {
+        // ignore
+      }
     }
+
+    const isRegistrar = Array.from(callerKeys).some((k) => registrarKeys.has(k))
+    if (registrarKeys.size > 0 && isRegistrar) {
+      const payloads = AdminCommandDefinition.describe().rpcPayloads
+      const allowedMethods = payloads 
+        ? Object.entries(payloads)
+            .filter(([, def]) => def.status === 'implemented')
+            .map(([name]) => name)
+        : []
+      if (allowedMethods.includes(req.method)) {
+        log.admin(`✅ Allowing ${req.method} from Restricted Registrar: ${this.opts?.registrarUid}`)
+        return
+      } else {
+        log.admin(`⛔ Denying ${req.method} from Restricted Registrar: ${this.opts?.registrarUid}`)
+        throw new Error('Registrar is only allowed to call: ' + allowedMethods.join(', '))
+      }
+    }
+
+    if (this.allowedUids.length > 0) {
+      const allowed = new Set<string>()
+      for (const uid of this.allowedUids) {
+        allowed.add(uid)
+        try {
+          allowed.add(identityIdFromPublicKey(uid))
+        } catch {
+          // ignore
+        }
+      }
+      const isAllowedAdmin = Array.from(callerKeys).some((k) => allowed.has(k))
+      if (!isAllowedAdmin) {
+        throw new Error('You are not designated to administrate this bunker')
+      }
+      return
+    }
+
+    throw new Error('You are not designated to administrate this bunker')
   }
 
   /**
-   * Validates that the derived admin pubkey matches SIGNER_NPUB if set.
-   * Prevents configuration drift between nsecbunker.json and environment variables.
+   * Validates that the derived admin pubkey matches SIGNER_UID if set.
    */
   private validateAdminIdentity(user: NDKUser) {
     const derivedPubkey = user.pubkey
-    const derivedNpub = nip19.npubEncode(derivedPubkey)
-    log.admin(`🔑 Admin interface identity: ${derivedNpub} (${derivedPubkey.substring(0, 16)}...)`)
+    const derivedUid = identityIdFromPublicKey(derivedPubkey)
+    log.admin(`🔑 Admin interface identity: ${derivedUid} (${derivedPubkey.substring(0, 16)}...)`)
 
-    const signerNpub = process.env.SIGNER_NPUB
-    if (signerNpub) {
-      try {
-        const { data: expectedPubkey } = nip19.decode(signerNpub) as { data: string }
-        if (expectedPubkey !== derivedPubkey) {
-          log.admin(`❌ FATAL: SIGNER_NPUB mismatch!`)
-          log.admin(`   Expected (SIGNER_NPUB): ${expectedPubkey.substring(0, 16)}...`)
-          log.admin(`   Derived (admin.key):    ${derivedPubkey.substring(0, 16)}...`)
-          log.admin(`   The admin.key in nsecbunker.json does not match SIGNER_NPUB.`)
-          process.exit(1)
-        }
-        log.admin(`✅ SIGNER_NPUB matches derived admin pubkey`)
-      } catch (e: any) {
-        log.admin(`❌ FATAL: Invalid SIGNER_NPUB format: ${e.message}`)
+    const signerUid = process.env.SIGNER_UID
+    if (signerUid) {
+      if (signerUid !== derivedUid) {
+        log.admin(`❌ FATAL: SIGNER_UID mismatch!`)
+        log.admin(`   Expected (SIGNER_UID): ${signerUid}`)
+        log.admin(`   Derived (daemon key):   ${derivedUid}`)
         process.exit(1)
       }
+      log.admin(`✅ SIGNER_UID matches derived daemon identity`)
     }
   }
 }

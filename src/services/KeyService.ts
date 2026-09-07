@@ -2,30 +2,30 @@
  * KeyService - Encrypted key storage and retrieval
  *
  * Uses AES-256-GCM for authenticated encryption of private keys.
- * Master key is derived from SIGNER_MASTER_KEY env var (memory-only).
+ * Master key is derived from SIGNER_KEK env var (memory-only).
  */
 
 import crypto from 'crypto'
-import { nip19, getPublicKey, utils } from 'nostr-tools'
-const { hexToBytes } = utils
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
+import { publicKeyFromSecret } from 'verity-event-data-module'
 import prisma from '../db.js'
 import { logError } from '../lib/logger.js'
 
 const ALGORITHM = 'aes-256-gcm'
 
 /**
- * Get master key from environment.
+ * Get KEK from environment.
  * Throws if not set - this is intentional, we want to fail fast.
  */
 function getMasterKey(): Buffer {
-  const masterKeyHex = process.env.SIGNER_MASTER_KEY
-  if (!masterKeyHex) {
-    throw new Error('CRITICAL: SIGNER_MASTER_KEY environment variable not set. ' + 'This key must be in memory only and never touch disk.')
+  const kekHex = process.env.SIGNER_KEK
+  if (!kekHex) {
+    throw new Error('CRITICAL: SIGNER_KEK environment variable not set. This key must be in memory only and never touch disk.')
   }
-  if (masterKeyHex.length !== 64) {
-    throw new Error('CRITICAL: SIGNER_MASTER_KEY must be a 64-character hex string (256 bits)')
+  if (kekHex.length !== 64) {
+    throw new Error('CRITICAL: SIGNER_KEK must be a 64-character hex string (256 bits)')
   }
-  return Buffer.from(masterKeyHex, 'hex')
+  return Buffer.from(kekHex, 'hex')
 }
 
 /**
@@ -78,7 +78,14 @@ export function decryptPrivateKey(encryptedKey: string, iv: string, authTag: str
 /**
  * Store an encrypted key in the database.
  */
-export async function storeKey(keyName: string, privateKeyHex: string, pubkey: string): Promise<void> {
+export async function storeKey(
+  keyName: string,
+  privateKeyHex: string,
+  pubkey: string,
+  algorithm: string = 'secp256k1-nip44',
+  role: string = 'identity',
+  parentKeyName?: string | null
+): Promise<void> {
   const { encryptedKey, iv, authTag } = encryptPrivateKey(privateKeyHex, keyName)
 
   await prisma.key.upsert({
@@ -86,12 +93,18 @@ export async function storeKey(keyName: string, privateKeyHex: string, pubkey: s
     create: {
       keyName,
       pubkey,
+      algorithm,
+      role,
+      parentKeyName: parentKeyName ?? null,
       encryptedKey,
       iv,
       authTag
     },
     update: {
       pubkey,
+      algorithm,
+      role,
+      parentKeyName: parentKeyName ?? null,
       encryptedKey,
       iv,
       authTag,
@@ -126,11 +139,58 @@ export async function retrieveKey(keyName: string): Promise<string | null> {
   return decryptPrivateKey(key.encryptedKey, key.iv, key.authTag, keyName)
 }
 
+export interface KeyFamily {
+  identity: { keyName: string; pubkey: string; privateKeyHex: string; algorithm: string }
+  enc?: { keyName: string; pubkey: string; privateKeyHex: string; algorithm: string }
+}
+
 /**
- * Convert hex private key to nsec format.
+ * Resolve an identity's key family using column-based grouping.
  */
-export function hexToNsec(privateKeyHex: string): string {
-  return nip19.nsecEncode(hexToBytes(privateKeyHex))
+export async function resolveKeyFamily(identityKeyName: string): Promise<KeyFamily | null> {
+  const identityRow = await prisma.key.findUnique({
+    where: { keyName: identityKeyName }
+  })
+  if (!identityRow || identityRow.status !== 'ACTIVE' || identityRow.role !== 'identity') {
+    return null
+  }
+
+  const identityPrivateKeyHex = await retrieveKey(identityKeyName)
+  if (!identityPrivateKeyHex) return null
+
+  const encRow = await prisma.key.findFirst({
+    where: { parentKeyName: identityKeyName, role: 'enc', status: 'ACTIVE' }
+  })
+
+  let enc: KeyFamily['enc'] | undefined
+  if (encRow) {
+    const encPrivateKeyHex = await retrieveKey(encRow.keyName)
+    if (encPrivateKeyHex) {
+      enc = {
+        keyName: encRow.keyName,
+        pubkey: encRow.pubkey,
+        privateKeyHex: encPrivateKeyHex,
+        algorithm: encRow.algorithm
+      }
+    }
+  } else if (identityRow.algorithm.startsWith('secp256k1')) {
+    enc = {
+      keyName: identityRow.keyName,
+      pubkey: identityRow.pubkey,
+      privateKeyHex: identityPrivateKeyHex,
+      algorithm: 'secp256k1-nip44'
+    }
+  }
+
+  return {
+    identity: {
+      keyName: identityRow.keyName,
+      pubkey: identityRow.pubkey,
+      privateKeyHex: identityPrivateKeyHex,
+      algorithm: identityRow.algorithm
+    },
+    enc
+  }
 }
 
 /**
@@ -159,8 +219,9 @@ export async function validateAllKeys(): Promise<{
     try {
       const decryptedHex = decryptPrivateKey(key.encryptedKey, key.iv, key.authTag, key.keyName)
 
-      // Verify the decrypted key produces the correct pubkey
-      const derivedPubkey = getPublicKey(hexToBytes(decryptedHex))
+      // Verify the decrypted key produces the correct pubkey based on algorithm
+      const derivedPubkeyBytes = publicKeyFromSecret(key.algorithm, decryptedHex)
+      const derivedPubkey = bytesToHex(derivedPubkeyBytes)
 
       if (derivedPubkey !== key.pubkey) {
         logError('keys', `Key ${key.keyName}: pubkey mismatch. ` + `Expected ${key.pubkey}, got ${derivedPubkey}`)
@@ -178,3 +239,4 @@ export async function validateAllKeys(): Promise<{
     failed
   }
 }
+

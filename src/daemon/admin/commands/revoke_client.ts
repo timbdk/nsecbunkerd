@@ -65,7 +65,10 @@ export default async function revokeClient(admin: AdminInterface, req: Validated
     // Include identity attestation tags so the relay can clear the device → user mapping
     const attestationTags: string[][] = []
     if (clientPubkey) attestationTags.push(['client', clientPubkey])
-    if (userPubkey) attestationTags.push(['user', userPubkey])
+    if (userPubkey) {
+      const userUid = /^[0-9a-f]{64}$/i.test(userPubkey) ? userPubkey : identityIdFromPublicKey(userPubkey)
+      attestationTags.push(['user', userUid])
+    }
     return admin.rpc.sendResponse(req.id, req.pubkey, 'revoked', KIND_ADMIN_RESPONSE, undefined, attestationTags)
   } catch (e: any) {
     log.admin(`Error revoking client: ${e.message}`)

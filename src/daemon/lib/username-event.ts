@@ -1,4 +1,4 @@
-import NDK, { NDKPrivateKeySigner, NDKRelayAuthPolicies, NDKRelaySet } from '@nostr-dev-kit/ndk'
+import NDK, { NDKMlDsaSigner, NDKPrivateKeySigner, NDKRelayAuthPolicies, NDKRelaySet, NDKSigner } from '@nostr-dev-kit/ndk'
 import { Kind415UsernameRegistration, identityIdFromPublicKey } from 'verity-event-data-module'
 import { log } from '../../lib/logger.js'
 import { checkpointService } from '../../services/CheckpointService.js'
@@ -10,13 +10,13 @@ import { checkpointService } from '../../services/CheckpointService.js'
  * Signed by the user's own key (not the admin/registrar key).
  *
  * Authentication model (two identity layers):
- * - Connection identity: SIGNER_MASTER_KEY authenticates the WebSocket via NIP-42.
+ * - Connection identity: SIGNER_DAEMON_KEY authenticates the WebSocket via NIP-42.
  *   The relay requires this trusted signer connection for Kind 415 writes.
  * - Event identity: userSigner signs the event itself (event.uid = user's identity id).
  *   The relay allows event.uid ≠ connection uid ("No Identity Lock" design).
  *
  * Flow:
- * 1. Connect to relay and authenticate as trusted signer (SIGNER_MASTER_KEY)
+ * 1. Connect to relay and authenticate as trusted signer (SIGNER_DAEMON_KEY)
  * 2. Query relay for existing Kind 415 with matching uid + username
  * 3. If found → skip (already published, e.g. pg-boss retry)
  * 4. If not found → sign with user's key and publish
@@ -25,7 +25,7 @@ import { checkpointService } from '../../services/CheckpointService.js'
 const NDK_RELAY_STATUS_AUTHENTICATED = 8
 
 export async function publishUsernameEvent(
-  userSigner: NDKPrivateKeySigner,
+  userSigner: NDKSigner,
   username: string,
   pubkey: string,
   relayUrls: string[],
@@ -41,12 +41,12 @@ export async function publishUsernameEvent(
   if (ndkInstance) {
     ndk = ndkInstance
   } else {
-    // Use SIGNER_MASTER_KEY for NIP-42 connection authentication.
-    const masterKey = process.env.SIGNER_MASTER_KEY
-    if (!masterKey) {
-      throw new Error('SIGNER_MASTER_KEY not set — cannot authenticate with relay')
+    // Use SIGNER_DAEMON_KEY for NIP-42 connection authentication.
+    const daemonKey = process.env.SIGNER_DAEMON_KEY
+    if (!daemonKey) {
+      throw new Error('SIGNER_DAEMON_KEY not set — cannot authenticate with relay')
     }
-    const authSigner = new NDKPrivateKeySigner(masterKey)
+    const authSigner = new NDKMlDsaSigner(daemonKey)
 
     ndk = new NDK({
       explicitRelayUrls: relayUrls,
@@ -76,7 +76,9 @@ export async function publishUsernameEvent(
   }
 
   try {
-    const key = kid ? undefined : ('secp256k1-schnorr:' + Buffer.from(pubkey, 'hex').toString('base64'))
+    const key = kid
+      ? undefined
+      : ('ml-dsa-44:' + Buffer.from(pubkey, 'hex').toString('base64'))
     const uid = identityIdFromPublicKey(pubkey)
 
     // Idempotency: check if Kind 415 already exists for this uid + username

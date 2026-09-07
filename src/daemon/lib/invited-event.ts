@@ -1,4 +1,4 @@
-import NDK, { NDKPrivateKeySigner, NDKRelayAuthPolicies } from '@nostr-dev-kit/ndk'
+import NDK, { NDKMlDsaSigner, NDKPrivateKeySigner, NDKRelayAuthPolicies, NDKSigner } from '@nostr-dev-kit/ndk'
 import { Kind723Invited, identityIdFromPublicKey } from 'verity-event-data-module'
 import { log } from '../../lib/logger.js'
 import { checkpointService } from '../../services/CheckpointService.js'
@@ -10,7 +10,7 @@ import { checkpointService } from '../../services/CheckpointService.js'
 const NDK_RELAY_STATUS_AUTHENTICATED = 8
 
 export async function publishInvitedEvent(
-  inviterSigner: NDKPrivateKeySigner,
+  inviterSigner: NDKSigner,
   inviteePubkey: string,
   relayUrls: string[],
   createdAt?: number,
@@ -25,11 +25,11 @@ export async function publishInvitedEvent(
   if (ndkInstance) {
     ndk = ndkInstance
   } else {
-    const masterKey = process.env.SIGNER_MASTER_KEY
-    if (!masterKey) {
-      throw new Error('SIGNER_MASTER_KEY not set — cannot authenticate with relay')
+    const daemonKey = process.env.SIGNER_DAEMON_KEY
+    if (!daemonKey) {
+      throw new Error('SIGNER_DAEMON_KEY not set — cannot authenticate with relay')
     }
-    const authSigner = new NDKPrivateKeySigner(masterKey)
+    const authSigner = new NDKMlDsaSigner(daemonKey)
 
     ndk = new NDK({
       explicitRelayUrls: relayUrls,
@@ -56,23 +56,26 @@ export async function publishInvitedEvent(
 
   try {
     const inviterPubkey = await inviterSigner.user().then(u => u.pubkey)
-    const inviterPubkeyBytes = Buffer.from(inviterPubkey, 'hex')
-    const key = kid ? undefined : ('secp256k1-schnorr:' + inviterPubkeyBytes.toString('base64'))
+    const isMlDsa = inviterPubkey.length === 2624
+    const key = kid ? undefined : ((isMlDsa ? 'ml-dsa-44:' : 'secp256k1-schnorr:') + inviterPubkeyBytes.toString('base64'))
     const uid = identityIdFromPublicKey(inviterPubkey)
+    const inviteeUid = /^[0-9a-fA-F]{64}$/.test(inviteePubkey)
+      ? inviteePubkey
+      : identityIdFromPublicKey(inviteePubkey)
 
     // Idempotency: check if Kind 723 already exists for this inviter and invitee
-    const existing = await queryExistingInvitedEvent(ndk, uid, inviteePubkey)
+    const existing = await queryExistingInvitedEvent(ndk, uid, inviteeUid)
     if (existing) {
-      log.admin(`Kind 723 already exists for inviter ${inviterPubkey.substring(0, 8)} -> invitee ${inviteePubkey.substring(0, 8)}, skipping publish`)
+      log.admin(`Kind 723 already exists for inviter ${inviterPubkey.substring(0, 8)} -> invitee ${inviteeUid.substring(0, 8)}, skipping publish`)
       checkpointService.broadcast('signer.kind723.published', {
         inviterPubkey: inviterPubkey.substring(0, 16),
-        inviteePubkey: inviteePubkey.substring(0, 16),
+        inviteePubkey: inviteeUid.substring(0, 16),
         skipped: true
       })
       return
     }
 
-    let builder = Kind723Invited.build({ inviteePubkey })
+    let builder = Kind723Invited.build({ inviteePubkey: inviteeUid })
     if (kid) builder = builder.setKid(kid)
 
     const event = await builder.toSignedNDKEvent({

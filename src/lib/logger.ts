@@ -91,10 +91,11 @@ export function auditSigningRequest(event: SigningAuditEvent): void {
   console.log(JSON.stringify({ type: 'SIGNING_AUDIT', ...entry }))
 
   // Also log to debug namespace for development
+  const clientPrefix = entry.clientPubkey ? `${entry.clientPubkey.slice(0, 16)}...` : 'unknown'
   if (entry.allowed) {
-    log.signing(`✅ ${entry.method} allowed for ${entry.clientPubkey.slice(0, 16)}... on ${entry.keyName}`)
+    log.signing(`✅ ${entry.method} allowed for ${clientPrefix} on ${entry.keyName}`)
   } else {
-    log.signing(`❌ ${entry.method} denied for ${entry.clientPubkey.slice(0, 16)}... on ${entry.keyName}: ${entry.reason}`)
+    log.signing(`❌ ${entry.method} denied for ${clientPrefix} on ${entry.keyName}: ${entry.reason}`)
   }
 }
 

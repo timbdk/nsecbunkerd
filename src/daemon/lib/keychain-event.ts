@@ -6,16 +6,16 @@
 
 // ── Imports ──────────────────────────────────────────────────────────────────
 
-import NDK, { NDKEvent, NDKPrivateKeySigner, NDKRelayAuthPolicies, NDKRelaySet } from '@nostr-dev-kit/ndk'
+import NDK, { NDKEvent, NDKPrivateKeySigner, NDKMlDsaSigner, NDKRelayAuthPolicies, NDKRelaySet, NDKSigner } from '@nostr-dev-kit/ndk'
 import {
   Kind297KeyChain,
   identityIdFromPublicKey,
   endorsementPreimage,
   currentIdentityEntry,
+  sign,
   type ChainEntry,
   type PlatformEndorsement
 } from 'verity-event-data-module'
-import { schnorr } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { hexToBytes } from '@noble/hashes/utils.js'
 import { base64 } from '@scure/base'
@@ -37,11 +37,11 @@ export function buildEndorsement(
   const preimage = endorsementPreimage(uid, variant, content)
   const hash = sha256(new TextEncoder().encode(preimage))
   const daemonPrivBytes = hexToBytes(daemonPrivateKeyHex)
-  const sig = schnorr.sign(hash, daemonPrivBytes)
 
+  const sig = sign('ml-dsa-44', daemonPrivBytes, hash)
   return {
     entry: daemonServiceEntryId,
-    alg: 'secp256k1-schnorr',
+    alg: 'ml-dsa-44',
     b64: base64.encode(sig)
   }
 }
@@ -101,26 +101,27 @@ export async function queryCurrentIdentityEntry(
 const NDK_RELAY_STATUS_AUTHENTICATED = 8
 
 export async function publishGenesisEntry(
-  userSigner: NDKPrivateKeySigner,
+  userSigner: NDKSigner,
   pubkey: string,
   relayUrls: string[],
   platformServiceEntryId: string,
   createdAt?: number,
-  ndkInstance?: NDK
+  ndkInstance?: NDK,
+  encPubkey?: string
 ): Promise<string> {
   if (!relayUrls || relayUrls.length === 0) {
     throw new Error('No relay URLs configured — cannot publish Kind 297')
   }
-  const masterKey = process.env.SIGNER_MASTER_KEY
-  if (!masterKey) {
-    throw new Error('SIGNER_MASTER_KEY not set — cannot endorse or authenticate with relay')
+  const daemonKey = process.env.SIGNER_DAEMON_KEY
+  if (!daemonKey) {
+    throw new Error('SIGNER_DAEMON_KEY not set — cannot endorse or authenticate with relay')
   }
 
   let ndk: NDK
   if (ndkInstance) {
     ndk = ndkInstance
   } else {
-    const authSigner = new NDKPrivateKeySigner(masterKey)
+    const authSigner = new NDKMlDsaSigner(daemonKey)
 
     ndk = new NDK({
       explicitRelayUrls: relayUrls,
@@ -149,10 +150,17 @@ export async function publishGenesisEntry(
   }
 
   try {
-    const pubBytes = Buffer.from(pubkey, 'hex')
-    const b64 = pubBytes.toString('base64')
-    const signKey = `secp256k1-schnorr:${b64}`
-    const encKey = `secp256k1-nip44:${b64}`
+    const pubBytes = hexToBytes(pubkey)
+    const isMlDsa = pubkey.length === 2624 || pubBytes.length === 1312
+    const signKey = isMlDsa
+      ? `ml-dsa-44:${base64.encode(pubBytes)}`
+      : `secp256k1-schnorr:${base64.encode(pubBytes)}`
+
+    if (isMlDsa && !encPubkey) {
+      throw new Error('encPubkey is required for ML-DSA-44 genesis entry')
+    }
+    const encBytes = encPubkey ? hexToBytes(encPubkey) : pubBytes
+    const encKey = `secp256k1-nip44:${base64.encode(encBytes)}`
     const uid = identityIdFromPublicKey(pubkey)
     const validFrom = createdAt || Math.floor(Date.now() / 1000)
 
@@ -186,7 +194,7 @@ export async function publishGenesisEntry(
       contentWithoutPlatform,
       uid,
       'genesis',
-      masterKey,
+      daemonKey,
       platformServiceEntryId
     )
 
@@ -245,7 +253,7 @@ export async function publishGenesisEntry(
  * Day-quantized and held-until-first-use at the relay.
  */
 export async function publishDelegateEntry(
-  userSigner: NDKPrivateKeySigner,
+  userSigner: NDKSigner,
   pubkey: string,
   localSigningPubkey: string,
   relayUrls: string[],
@@ -257,16 +265,16 @@ export async function publishDelegateEntry(
   if (!relayUrls || relayUrls.length === 0) {
     throw new Error('No relay URLs configured — cannot publish Kind 297')
   }
-  const masterKey = process.env.SIGNER_MASTER_KEY
-  if (!masterKey) {
-    throw new Error('SIGNER_MASTER_KEY not set — cannot endorse or authenticate with relay')
+  const daemonKey = process.env.SIGNER_DAEMON_KEY
+  if (!daemonKey) {
+    throw new Error('SIGNER_DAEMON_KEY not set — cannot endorse or authenticate with relay')
   }
 
   let ndk: NDK
   if (ndkInstance) {
     ndk = ndkInstance
   } else {
-    const authSigner = new NDKPrivateKeySigner(masterKey)
+    const authSigner = new NDKMlDsaSigner(daemonKey)
     ndk = new NDK({
       explicitRelayUrls: relayUrls,
       signer: authSigner,
@@ -319,7 +327,7 @@ export async function publishDelegateEntry(
       contentWithoutPlatform,
       uid,
       'delegate',
-      masterKey,
+      daemonKey,
       platformServiceEntryId
     )
 
@@ -371,7 +379,7 @@ export async function publishDelegateEntry(
  * Signed by the user's identity key and endorsed by the daemon key.
  */
 export async function publishRevokeEntry(
-  userSigner: NDKPrivateKeySigner,
+  userSigner: NDKSigner,
   pubkey: string,
   targetEntryId: string,
   relayUrls: string[],
@@ -383,16 +391,16 @@ export async function publishRevokeEntry(
   if (!relayUrls || relayUrls.length === 0) {
     throw new Error('No relay URLs configured — cannot publish Kind 297')
   }
-  const masterKey = process.env.SIGNER_MASTER_KEY
-  if (!masterKey) {
-    throw new Error('SIGNER_MASTER_KEY not set — cannot endorse or authenticate with relay')
+  const daemonKey = process.env.SIGNER_DAEMON_KEY
+  if (!daemonKey) {
+    throw new Error('SIGNER_DAEMON_KEY not set — cannot endorse or authenticate with relay')
   }
 
   let ndk: NDK
   if (ndkInstance) {
     ndk = ndkInstance
   } else {
-    const authSigner = new NDKPrivateKeySigner(masterKey)
+    const authSigner = new NDKMlDsaSigner(daemonKey)
     ndk = new NDK({
       explicitRelayUrls: relayUrls,
       signer: authSigner,
@@ -426,7 +434,7 @@ export async function publishRevokeEntry(
       contentWithoutPlatform,
       uid,
       'revoke',
-      masterKey,
+      daemonKey,
       platformServiceEntryId
     )
 

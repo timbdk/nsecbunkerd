@@ -13,21 +13,28 @@ enum KeyStatus {
   ACTIVE
   SUSPENDED
   DELETED
+  RETIRED
 }
 
 model Key {
-  id           Int       @id @default(autoincrement())
-  keyName      String    @unique          // e.g. "user@verity.local"
-  pubkey       String
-  encryptedKey String                      // AES-256-GCM ciphertext (hex)
-  iv           String                      // Initialization vector (hex)
-  authTag      String                      // GCM authentication tag (hex)
-  backedUpAt   DateTime?                   // When backup confirmed
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-  status       KeyStatus @default(ACTIVE)  // Account lifecycle state
-  statusAt     DateTime?                   // When status last changed
-  sessions     Session[]
+  id            Int       @id @default(autoincrement())
+  keyName       String    @unique          // e.g. "user@verity.local"
+  pubkey        String
+  algorithm     String    @default("secp256k1-nip44")
+  role          String    @default("identity")
+  parentKeyName String?
+  encryptedKey  String                     // AES-256-GCM ciphertext (hex)
+  iv            String                     // Initialization vector (hex)
+  authTag       String                     // GCM authentication tag (hex)
+  backedUpAt    DateTime?                  // When backup confirmed
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  status        KeyStatus @default(ACTIVE) // Account lifecycle state
+  statusAt      DateTime?                  // When status last changed
+  retiredAt     DateTime?                  // When key was retired
+  sessions      Session[]
+
+  @@index([parentKeyName, role, status])
 }
 
 model Session {

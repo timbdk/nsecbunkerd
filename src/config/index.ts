@@ -11,3 +11,4 @@ export interface IConfig {
     logs: string;
     verbose: boolean;
 }
+export * from './validation.js'
