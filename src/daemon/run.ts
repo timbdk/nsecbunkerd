@@ -119,10 +119,16 @@ export class Daemon {
   constructor(config: DaemonConfig) {
     this.config = config
     const registrarUid = process.env.REGISTRAR_UID
+    const registrarEcdhPubkey = process.env.REGISTRAR_ECDH_PUBKEY
+    const authorizerUid = process.env.AUTHORIZER_UID
+    const authorizerEcdhPubkey = process.env.AUTHORIZER_ECDH_PUBKEY
     this.adminInterface = new AdminInterface(
       {
         ...config.admin,
-        registrarUid
+        registrarUid,
+        registrarEcdhPubkey,
+        authorizerUid,
+        authorizerEcdhPubkey
       },
       config
     )

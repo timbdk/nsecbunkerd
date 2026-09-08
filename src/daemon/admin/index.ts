@@ -33,6 +33,9 @@ import renameAccount from './commands/rename_account.js'
 export type IAdminOpts = {
   allowedUids?: string[]
   registrarUid?: string
+  registrarEcdhPubkey?: string
+  authorizerUid?: string
+  authorizerEcdhPubkey?: string
   adminRelays: string[]
 }
 
@@ -83,6 +86,17 @@ class AdminInterface {
     })
 
     this.rpc = new NDKNostrRpc(this.ndk, this.rpcSigner, log.admin)
+    this.rpc.adminEcdhPubkeys = new Map<string, string>()
+    const regUid = opts.registrarUid || process.env.REGISTRAR_UID
+    const regEcdh = opts.registrarEcdhPubkey || process.env.REGISTRAR_ECDH_PUBKEY
+    if (regUid && regEcdh) {
+      this.rpc.adminEcdhPubkeys.set(regUid, regEcdh)
+    }
+    const authUid = opts.authorizerUid || process.env.AUTHORIZER_UID
+    const authEcdh = opts.authorizerEcdhPubkey || process.env.AUTHORIZER_ECDH_PUBKEY
+    if (authUid && authEcdh) {
+      this.rpc.adminEcdhPubkeys.set(authUid, authEcdh)
+    }
   }
 
   public async config(): Promise<IConfig> {
@@ -187,6 +201,10 @@ class AdminInterface {
   }
 
   private async validateRequest(req: NDKRpcRequest): Promise<void> {
+    if (!req.event || typeof req.event.verifySignature !== 'function' || !req.event.verifySignature(false)) {
+      throw new Error('Event signature verification failed')
+    }
+
     const callerKeys = new Set<string>()
     if (req.pubkey) {
       callerKeys.add(req.pubkey)
@@ -196,15 +214,23 @@ class AdminInterface {
         // ignore if not valid key material
       }
     }
+    const eventUid = (req.event as any)?.uid
+    if (eventUid) {
+      callerKeys.add(eventUid)
+    }
+    const eventPubkey = req.event?.pubkey
+    if (eventPubkey) {
+      callerKeys.add(eventPubkey)
+      try {
+        callerKeys.add(identityIdFromPublicKey(eventPubkey))
+      } catch {
+        // ignore
+      }
+    }
 
     const registrarKeys = new Set<string>()
     if (this.opts?.registrarUid) {
       registrarKeys.add(this.opts.registrarUid)
-      try {
-        registrarKeys.add(identityIdFromPublicKey(this.opts.registrarUid))
-      } catch {
-        // ignore
-      }
     }
 
     const isRegistrar = Array.from(callerKeys).some((k) => registrarKeys.has(k))
@@ -225,15 +251,7 @@ class AdminInterface {
     }
 
     if (this.allowedUids.length > 0) {
-      const allowed = new Set<string>()
-      for (const uid of this.allowedUids) {
-        allowed.add(uid)
-        try {
-          allowed.add(identityIdFromPublicKey(uid))
-        } catch {
-          // ignore
-        }
-      }
+      const allowed = new Set<string>(this.allowedUids)
       const isAllowedAdmin = Array.from(callerKeys).some((k) => allowed.has(k))
       if (!isAllowedAdmin) {
         throw new Error('You are not designated to administrate this bunker')

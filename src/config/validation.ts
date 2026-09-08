@@ -107,5 +107,37 @@ export function validateDaemonEnvironment(env: NodeJS.ProcessEnv): DaemonEnvVali
     }
   }
 
+  const regUid = env.REGISTRAR_UID
+  if (!regUid || regUid.length !== 64 || !/^[0-9a-fA-F]{64}$/.test(regUid)) {
+    return {
+      valid: false,
+      error: 'CRITICAL: REGISTRAR_UID environment variable not set or invalid (must be 64-character hex string)'
+    }
+  }
+
+  const regEcdh = env.REGISTRAR_ECDH_PUBKEY
+  if (!regEcdh || regEcdh.length !== 64 || !/^[0-9a-fA-F]{64}$/.test(regEcdh)) {
+    return {
+      valid: false,
+      error: 'CRITICAL: REGISTRAR_ECDH_PUBKEY environment variable not set or invalid (must be 64-character hex string)'
+    }
+  }
+
+  const authUid = env.AUTHORIZER_UID
+  if (!authUid || authUid.length !== 64 || !/^[0-9a-fA-F]{64}$/.test(authUid)) {
+    return {
+      valid: false,
+      error: 'CRITICAL: AUTHORIZER_UID environment variable not set or invalid (must be 64-character hex string)'
+    }
+  }
+
+  const authEcdh = env.AUTHORIZER_ECDH_PUBKEY
+  if (!authEcdh || authEcdh.length !== 64 || !/^[0-9a-fA-F]{64}$/.test(authEcdh)) {
+    return {
+      valid: false,
+      error: 'CRITICAL: AUTHORIZER_ECDH_PUBKEY environment variable not set or invalid (must be 64-character hex string)'
+    }
+  }
+
   return { valid: true }
 }
