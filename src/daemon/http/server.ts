@@ -56,7 +56,7 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
         if (url.pathname === '/testing/register' && req.method === 'POST') {
           try {
             const body = await req.json() as any
-            const { keyName, nsec, pubkey, clientPubkey, createdAt, identityKey, encKey } = body
+            const { keyName, nsec, pubkey, clientPubkey, clientEncPubkey, createdAt, identityKey, encKey } = body
             
             if (!keyName || (!nsec && !identityKey) || (!pubkey && !identityKey)) {
               return Response.json({ error: 'keyName, and key material are required' }, { status: 400, headers })
@@ -72,16 +72,20 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
             if (identityKey) {
               identitySecretHex = identityKey.secretKey
               identityPubkeyHex = identityKey.publicKey
-            } else if (nsec.startsWith('nsec1')) {
-              identitySecretHex = Buffer.from(nip19.decode(nsec).data as Uint8Array).toString('hex')
+            } else if (nsec && pubkey) {
+              identitySecretHex = nsec.startsWith('nsec1')
+                ? Buffer.from(nip19.decode(nsec).data as Uint8Array).toString('hex')
+                : nsec
               identityPubkeyHex = pubkey
             } else {
-              identitySecretHex = nsec
-              identityPubkeyHex = pubkey
+              return Response.json({ error: 'identityKey or nsec+pubkey required' }, { status: 400, headers })
             }
 
             const isMlDsa = identitySecretHex.length === 5120 || identityPubkeyHex.length === 2624
-            const identityAlg = isMlDsa ? 'ml-dsa-44' : 'secp256k1-schnorr'
+            if (!isMlDsa) {
+              return Response.json({ error: 'Classical secp256k1 keys are not supported; ML-DSA-44 required' }, { status: 400, headers })
+            }
+            const identityAlg = 'ml-dsa-44'
 
             let encSecretHex: string | undefined
             let encPubkeyHex: string | undefined
@@ -91,7 +95,7 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
               encSecretHex = encKey.secretKey
               encPubkeyHex = encKey.publicKey
               shouldStoreEnc = true
-            } else if (isMlDsa) {
+            } else {
               const existingEnc = await prisma.key.findFirst({
                 where: { parentKeyName: keyName, role: 'enc', status: 'ACTIVE' }
               })
@@ -104,21 +108,17 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
                 encPubkeyHex = Buffer.from(generatedEnc.publicKey).toString('hex')
                 shouldStoreEnc = true
               }
-            } else {
-              // For classical accounts, the identity key functions as the encryption key
-              encSecretHex = identitySecretHex
-              encPubkeyHex = identityPubkeyHex
             }
 
             // Store identity row
             await storeKey(keyName, identitySecretHex, identityPubkeyHex, identityAlg, 'identity')
-            // Store enc row if ML-DSA and newly generated or explicitly provided
-            if (isMlDsa && shouldStoreEnc && encSecretHex && encPubkeyHex) {
+            // Store enc row if newly generated or explicitly provided
+            if (shouldStoreEnc && encSecretHex && encPubkeyHex) {
               await storeKey(`${keyName}#enc`, encSecretHex, encPubkeyHex, 'secp256k1-nip44', 'enc', keyName)
             }
             checkpointService.broadcast('signer.testing.key_stored', { keyName })
 
-            const testSigner = isMlDsa ? new NDKMlDsaSigner(identitySecretHex) : new NDKPrivateKeySigner(identitySecretHex)
+            const testSigner = new NDKMlDsaSigner(identitySecretHex)
 
             if (clientPubkey) {
               await allowAllRequestsFromKey(clientPubkey, keyName, 'connect', undefined, 'test-client')
@@ -131,26 +131,40 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
               log.http(`🧪 Testing: authorized client ${clientPubkey.slice(0, 16)}... for key ${keyName}`)
               checkpointService.broadcast('signer.testing.client_authorized', { keyName, clientPubkey })
 
+              const clientUid = clientPubkey.length === 2624 ? identityIdFromPublicKey(clientPubkey) : clientPubkey
+              if (clientEncPubkey) {
+                await prisma.session.updateMany({
+                  where: { keyName, clientPubkey: { in: [clientPubkey, clientUid] } },
+                  data: { clientEncPubkey }
+                })
+              }
+
               const attestationPayload = JSON.stringify({ id: 'short-circuit', result: 'attestation' })
               const encSigner = new NDKPrivateKeySigner(encSecretHex)
-              const clientUser = new (await import('@nostr-dev-kit/ndk')).NDKUser({ pubkey: clientPubkey })
+              const targetEncPubkey = clientEncPubkey || encPubkeyHex
+              const clientUser = new (await import('@nostr-dev-kit/ndk')).NDKUser({ pubkey: targetEncPubkey })
               const encryptedAttestation = await encSigner.encrypt(clientUser, attestationPayload, 'nip44')
 
               const { NDKRelaySet } = await import('@nostr-dev-kit/ndk')
               const uid = identityIdFromPublicKey(identityPubkeyHex)
               const userPubkeyBytes = Buffer.from(identityPubkeyHex, 'hex')
-              const keyField = (isMlDsa ? 'ml-dsa-44:' : 'secp256k1-schnorr:') + userPubkeyBytes.toString('base64')
+              const keyField = 'ml-dsa-44:' + userPubkeyBytes.toString('base64')
+
+              const attestationTags = [
+                ['p', uid],
+                ['policy', 'allow', 'user', uid],
+                ['client', clientUid],
+                ['user', uid]
+              ]
+              if (clientUid !== clientPubkey) {
+                attestationTags.push(['client', clientPubkey])
+              }
 
               const attestationEvent = new NDKEvent(daemon.ndk, {
                 kind: 24135,
                 content: encryptedAttestation,
                 created_at: createdAt || Math.floor(Date.now() / 1000),
-                tags: [
-                  ['p', uid],
-                  ['policy', 'allow', 'user', uid],
-                  ['client', clientPubkey],
-                  ['user', uid]
-                ]
+                tags: attestationTags
               } as any)
               attestationEvent.uid = uid
               attestationEvent.key = keyField
@@ -207,8 +221,9 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
             if (e.code === 'P2002') return Response.json({ error: 'Key already exists' }, { status: 409, headers })
             logError('http', `Testing register error: ${e.message}`, e)
             if (e.errors) {
-              for (const [r, err] of e.errors) {
-                logError('http', `Relay ${(r as any)?.url ?? r} rejected: ${(err as any)?.message ?? err}`)
+              const errEntries = e.errors instanceof Map ? e.errors.entries() : Array.isArray(e.errors) ? e.errors.entries() : Object.entries(e.errors)
+              for (const [r, err] of errEntries) {
+                logError('http', `Relay ${(r as any)?.url ?? r} rejected: ${(err as any)?.message ?? (err as any)}`)
               }
             }
             return Response.json({ error: e.message }, { status: 500, headers })
@@ -219,7 +234,7 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
         if (url.pathname === '/testing/authorize-client' && req.method === 'POST') {
           try {
             const body = await req.json() as any
-            const { keyName, clientPubkey, certify, localSigningPubkey, createdAt } = body
+            const { keyName, clientPubkey, clientEncPubkey, certify, localSigningPubkey, createdAt } = body
             
             if (!keyName || !clientPubkey) return Response.json({ error: 'keyName and clientPubkey are required' }, { status: 400, headers })
 
@@ -236,6 +251,14 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
             await allowAllRequestsFromKey(clientPubkey, keyName, 'switch_relays', undefined, 'test-client')
             await allowAllRequestsFromKey(clientPubkey, keyName, 'get_public_key', undefined, 'test-client')
             await allowAllRequestsFromKey(clientPubkey, keyName, 'ping', undefined, 'test-client')
+
+            if (clientEncPubkey) {
+              const clientUid = clientPubkey.length === 2624 ? identityIdFromPublicKey(clientPubkey) : clientPubkey
+              await prisma.session.updateMany({
+                where: { keyName, clientPubkey: { in: [clientPubkey, clientUid] } },
+                data: { clientEncPubkey }
+              })
+            }
 
             let delegateEntryId: string | undefined
             if (certify && localSigningPubkey) {
@@ -403,11 +426,13 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
             const nsec = await retrieveKey(keyName)
             if (!nsec) return Response.json({ error: 'Key not found' }, { status: 404, headers })
 
-            const isMlDsa = key?.algorithm === 'ml-dsa-44'
-            const signer = isMlDsa ? new NDKMlDsaSigner(nsec) : new NDKPrivateKeySigner(nsec)
+            if (key?.algorithm !== 'ml-dsa-44') {
+              return Response.json({ error: 'Classical signing algorithm not supported; ML-DSA-44 required' }, { status: 400, headers })
+            }
+            const signer = new NDKMlDsaSigner(nsec)
             const user = await signer.user()
             const userPubkeyBytes = Buffer.from(user.pubkey, 'hex')
-            const keyField = (isMlDsa ? 'ml-dsa-44:' : 'secp256k1-schnorr:') + userPubkeyBytes.toString('base64')
+            const keyField = 'ml-dsa-44:' + userPubkeyBytes.toString('base64')
             const uid = identityIdFromPublicKey(user.pubkey)
 
             const event = new NDKEvent(daemon.ndk, {

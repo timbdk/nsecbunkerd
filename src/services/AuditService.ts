@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import { createWriteStream, WriteStream, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
+import { identityIdFromPublicKey } from 'verity-event-data-module'
 import { log } from '../lib/logger.js'
 
 export interface AuditEvent {
@@ -224,7 +225,18 @@ export class AuditService {
   getEvents(filter?: Partial<AuditEvent>): AuditEvent[] {
     if (!filter) return [...this.events]
 
-    return this.events.filter((event) => Object.entries(filter).every(([key, value]) => event[key as keyof AuditEvent] === value))
+    return this.events.filter((event) =>
+      Object.entries(filter).every(([key, value]) => {
+        if (key === 'clientPubkey' && typeof value === 'string') {
+          if (event.clientPubkey === value) return true
+          if (value.length === 2624) {
+            return event.clientPubkey === identityIdFromPublicKey(value)
+          }
+          return false
+        }
+        return event[key as keyof AuditEvent] === value
+      })
+    )
   }
 
   /**

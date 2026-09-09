@@ -38,12 +38,13 @@ model Key {
 }
 
 model Session {
-  id           Int                @id @default(autoincrement())
-  keyName      String
-  clientPubkey String                              // Authorized device/browser pubkey
-  createdAt    DateTime           @default(now())
-  updatedAt    DateTime           @updatedAt
-  revokedAt    DateTime?
+  id              Int                @id @default(autoincrement())
+  keyName         String
+  clientPubkey    String                              // Authorized device/browser pubkey
+  clientEncPubkey String?                             // Classical ECDH public key (hex) for NIP-44 transport envelope
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  revokedAt       DateTime?
   lastUsedAt   DateTime?
   description  String?
   key          Key                @relation(fields: [keyName], references: [keyName])

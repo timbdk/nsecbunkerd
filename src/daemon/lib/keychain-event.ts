@@ -152,14 +152,15 @@ export async function publishGenesisEntry(
   try {
     const pubBytes = hexToBytes(pubkey)
     const isMlDsa = pubkey.length === 2624 || pubBytes.length === 1312
-    const signKey = isMlDsa
-      ? `ml-dsa-44:${base64.encode(pubBytes)}`
-      : `secp256k1-schnorr:${base64.encode(pubBytes)}`
+    if (!isMlDsa) {
+      throw new Error('ML-DSA-44 required for genesis entry')
+    }
+    const signKey = `ml-dsa-44:${base64.encode(pubBytes)}`
 
-    if (isMlDsa && !encPubkey) {
+    if (!encPubkey) {
       throw new Error('encPubkey is required for ML-DSA-44 genesis entry')
     }
-    const encBytes = encPubkey ? hexToBytes(encPubkey) : pubBytes
+    const encBytes = hexToBytes(encPubkey)
     const encKey = `secp256k1-nip44:${base64.encode(encBytes)}`
     const uid = identityIdFromPublicKey(pubkey)
     const validFrom = createdAt || Math.floor(Date.now() / 1000)
@@ -299,13 +300,13 @@ export async function publishDelegateEntry(
     }
 
     let localKeyStr: string
-    if (localSigningPubkey.startsWith('secp256k1-schnorr:')) {
+    if (localSigningPubkey.startsWith('ml-dsa-44:')) {
       localKeyStr = localSigningPubkey
-    } else if (/^[a-f0-9]{64}$/i.test(localSigningPubkey)) {
+    } else if (/^[a-f0-9]{2624}$/i.test(localSigningPubkey)) {
       const pubBytes = hexToBytes(localSigningPubkey)
-      localKeyStr = `secp256k1-schnorr:${base64.encode(pubBytes)}`
+      localKeyStr = `ml-dsa-44:${base64.encode(pubBytes)}`
     } else {
-      localKeyStr = `secp256k1-schnorr:${localSigningPubkey}`
+      throw new Error(`Invalid localSigningPubkey for delegate entry: must be ML-DSA-44 key, got ${localSigningPubkey.slice(0, 16)}...`)
     }
 
     const nowSec = createdAt || Math.floor(Date.now() / 1000)

@@ -1,4 +1,5 @@
 import { NDKEvent, NostrEvent } from '@nostr-dev-kit/ndk'
+import { identityIdFromPublicKey } from 'verity-event-data-module'
 import prisma from '../../../db.js'
 import { log } from '../../../lib/logger.js'
 
@@ -8,10 +9,26 @@ export async function checkIfPubkeyAllowed(
   method: IMethod,
   payload?: string | NostrEvent
 ): Promise<boolean | undefined> {
-  // find Session by specific pubkey
+  const normalizedClientPubkey = clientPubkey.length === 2624 ? identityIdFromPublicKey(clientPubkey) : clientPubkey
+
+  // find Session by specific pubkey or normalized uid
   let session = await prisma.session.findUnique({
-    where: { keyName_clientPubkey: { keyName, clientPubkey } }
+    where: { keyName_clientPubkey: { keyName, clientPubkey: normalizedClientPubkey } }
   })
+
+  if (!session && normalizedClientPubkey !== clientPubkey) {
+    session = await prisma.session.findUnique({
+      where: { keyName_clientPubkey: { keyName, clientPubkey } }
+    })
+  }
+
+  if (!session && clientPubkey.length === 64) {
+    const candidateSessions = await prisma.session.findMany({
+      where: { keyName }
+    })
+    session =
+      candidateSessions.find((s) => s.clientPubkey.length === 2624 && identityIdFromPublicKey(s.clientPubkey) === clientPubkey) || null
+  }
 
   if (!session) {
     return undefined
@@ -133,12 +150,13 @@ export async function allowAllRequestsFromKey(
   description?: string,
   allowScope?: IAllowScope
 ): Promise<void> {
+  const normalizedClientPubkey = clientPubkey.length === 2624 ? identityIdFromPublicKey(clientPubkey) : clientPubkey
   try {
-    // Upsert the Session with the given clientPubkey
+    // Upsert the Session with the normalized clientPubkey
     const upsertedSession = await prisma.session.upsert({
-      where: { keyName_clientPubkey: { keyName, clientPubkey } },
+      where: { keyName_clientPubkey: { keyName, clientPubkey: normalizedClientPubkey } },
       update: { revokedAt: null },
-      create: { keyName, clientPubkey, description }
+      create: { keyName, clientPubkey: normalizedClientPubkey, description }
     })
 
     // Create a new SigningCondition for the given Session and set allowed to true
@@ -155,7 +173,7 @@ export async function allowAllRequestsFromKey(
     await prisma.audit.updateMany({
       where: {
         keyName,
-        clientPubkey,
+        clientPubkey: { in: [clientPubkey, normalizedClientPubkey] },
         method,
         allowed: null
       },
@@ -169,11 +187,12 @@ export async function allowAllRequestsFromKey(
 }
 
 export async function rejectAllRequestsFromKey(clientPubkey: string, keyName: string): Promise<void> {
-  // Upsert the Session with the given clientPubkey
+  const normalizedClientPubkey = clientPubkey.length === 2624 ? identityIdFromPublicKey(clientPubkey) : clientPubkey
+  // Upsert the Session with the normalized clientPubkey
   const upsertedSession = await prisma.session.upsert({
-    where: { keyName_clientPubkey: { keyName, clientPubkey } },
+    where: { keyName_clientPubkey: { keyName, clientPubkey: normalizedClientPubkey } },
     update: {},
-    create: { keyName, clientPubkey }
+    create: { keyName, clientPubkey: normalizedClientPubkey }
   })
 
   // Create a new SigningCondition for the given Session and set allowed to false

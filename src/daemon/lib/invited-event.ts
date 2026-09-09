@@ -57,7 +57,10 @@ export async function publishInvitedEvent(
   try {
     const inviterPubkey = await inviterSigner.user().then(u => u.pubkey)
     const isMlDsa = inviterPubkey.length === 2624
-    const key = kid ? undefined : ((isMlDsa ? 'ml-dsa-44:' : 'secp256k1-schnorr:') + inviterPubkeyBytes.toString('base64'))
+    if (!isMlDsa) {
+      throw new Error('ML-DSA-44 required for inviter')
+    }
+    const key = kid ? undefined : ('ml-dsa-44:' + inviterPubkeyBytes.toString('base64'))
     const uid = identityIdFromPublicKey(inviterPubkey)
     const inviteeUid = /^[0-9a-fA-F]{64}$/.test(inviteePubkey)
       ? inviteePubkey
