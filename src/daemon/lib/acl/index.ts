@@ -186,6 +186,52 @@ export async function allowAllRequestsFromKey(
   }
 }
 
+export interface MethodAuthorization {
+  method: string
+  allowScope?: IAllowScope
+}
+
+export async function allowMethodsFromKey(
+  clientPubkey: string,
+  keyName: string,
+  methods: MethodAuthorization[],
+  description?: string
+): Promise<void> {
+  const normalizedClientPubkey = clientPubkey.length === 2624 ? identityIdFromPublicKey(clientPubkey) : clientPubkey
+  try {
+    const upsertedSession = await prisma.session.upsert({
+      where: { keyName_clientPubkey: { keyName, clientPubkey: normalizedClientPubkey } },
+      update: { revokedAt: null },
+      create: { keyName, clientPubkey: normalizedClientPubkey, description }
+    })
+
+    const conditions = methods.map(({ method, allowScope }) => ({
+      allowed: true,
+      sessionId: upsertedSession.id,
+      ...allowScopeToSigningConditionQuery(method, allowScope)
+    }))
+
+    await prisma.signingCondition.createMany({
+      data: conditions
+    })
+
+    const methodNames = methods.map((m) => m.method)
+    await prisma.audit.updateMany({
+      where: {
+        keyName,
+        clientPubkey: { in: [clientPubkey, normalizedClientPubkey] },
+        method: { in: methodNames },
+        allowed: null
+      },
+      data: {
+        allowed: true
+      }
+    })
+  } catch (e) {
+    log.acl('allowMethodsFromKey', e)
+  }
+}
+
 export async function rejectAllRequestsFromKey(clientPubkey: string, keyName: string): Promise<void> {
   const normalizedClientPubkey = clientPubkey.length === 2624 ? identityIdFromPublicKey(clientPubkey) : clientPubkey
   // Upsert the Session with the normalized clientPubkey

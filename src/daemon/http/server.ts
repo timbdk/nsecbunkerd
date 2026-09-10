@@ -63,7 +63,7 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
             }
 
             const { storeKey, retrieveKey } = await import('../../services/KeyService.js')
-            const { allowAllRequestsFromKey } = await import('../lib/acl/index.js')
+            const { allowAllRequestsFromKey, allowMethodsFromKey } = await import('../lib/acl/index.js')
 
             checkpointService.broadcast('signer.testing.register.received', { keyName, clientPubkey })
 
@@ -121,13 +121,20 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
             const testSigner = new NDKMlDsaSigner(identitySecretHex)
 
             if (clientPubkey) {
-              await allowAllRequestsFromKey(clientPubkey, keyName, 'connect', undefined, 'test-client')
-              await allowAllRequestsFromKey(clientPubkey, keyName, 'sign_event', undefined, 'test-client', { kind: null })
-              await allowAllRequestsFromKey(clientPubkey, keyName, 'nip44_encrypt', undefined, 'test-client')
-              await allowAllRequestsFromKey(clientPubkey, keyName, 'nip44_decrypt', undefined, 'test-client')
-              await allowAllRequestsFromKey(clientPubkey, keyName, 'switch_relays', undefined, 'test-client')
-              await allowAllRequestsFromKey(clientPubkey, keyName, 'get_public_key', undefined, 'test-client')
-              await allowAllRequestsFromKey(clientPubkey, keyName, 'ping', undefined, 'test-client')
+              await allowMethodsFromKey(
+                clientPubkey,
+                keyName,
+                [
+                  { method: 'connect' },
+                  { method: 'sign_event', allowScope: { kind: null } },
+                  { method: 'nip44_encrypt' },
+                  { method: 'nip44_decrypt' },
+                  { method: 'switch_relays' },
+                  { method: 'get_public_key' },
+                  { method: 'ping' }
+                ],
+                'test-client'
+              )
               log.http(`🧪 Testing: authorized client ${clientPubkey.slice(0, 16)}... for key ${keyName}`)
               checkpointService.broadcast('signer.testing.client_authorized', { keyName, clientPubkey })
 
@@ -238,19 +245,26 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
             
             if (!keyName || !clientPubkey) return Response.json({ error: 'keyName and clientPubkey are required' }, { status: 400, headers })
 
-            const { allowAllRequestsFromKey } = await import('../lib/acl/index.js')
+            const { allowMethodsFromKey } = await import('../lib/acl/index.js')
             checkpointService.broadcast('signer.testing.authorize.received', { keyName, clientPubkey })
 
             const key = await prisma.key.findUnique({ where: { keyName } })
             if (!key) return Response.json({ error: `Key not found: ${keyName}` }, { status: 404, headers })
 
-            await allowAllRequestsFromKey(clientPubkey, keyName, 'connect', undefined, 'test-client')
-            await allowAllRequestsFromKey(clientPubkey, keyName, 'sign_event', undefined, 'test-client', { kind: null })
-            await allowAllRequestsFromKey(clientPubkey, keyName, 'nip44_encrypt', undefined, 'test-client')
-            await allowAllRequestsFromKey(clientPubkey, keyName, 'nip44_decrypt', undefined, 'test-client')
-            await allowAllRequestsFromKey(clientPubkey, keyName, 'switch_relays', undefined, 'test-client')
-            await allowAllRequestsFromKey(clientPubkey, keyName, 'get_public_key', undefined, 'test-client')
-            await allowAllRequestsFromKey(clientPubkey, keyName, 'ping', undefined, 'test-client')
+            await allowMethodsFromKey(
+              clientPubkey,
+              keyName,
+              [
+                { method: 'connect' },
+                { method: 'sign_event', allowScope: { kind: null } },
+                { method: 'nip44_encrypt' },
+                { method: 'nip44_decrypt' },
+                { method: 'switch_relays' },
+                { method: 'get_public_key' },
+                { method: 'ping' }
+              ],
+              'test-client'
+            )
 
             if (clientEncPubkey) {
               const clientUid = clientPubkey.length === 2624 ? identityIdFromPublicKey(clientPubkey) : clientPubkey
