@@ -8,6 +8,14 @@ if (!process.env.VERITY_SERIALIZATION_PREFIX) {
 }
 ;(globalThis as any).VERITY_SERIALIZATION_PREFIX = Number(process.env.VERITY_SERIALIZATION_PREFIX)
 
+// Gracefully exit on SIGTERM from Docker restart/stop.
+// In container environments where Bun runs as PID 1, the kernel does not supply
+// default signal handlers; an explicit SIGTERM listener prevents Docker from
+// hanging for the full 10-second stop timeout before issuing SIGKILL.
+process.on('SIGTERM', () => {
+  process.exit(0)
+})
+
 try {
   // Ensure config folder exists at the absolute path used by DATABASE_URL
   const configPath = '/app/config'

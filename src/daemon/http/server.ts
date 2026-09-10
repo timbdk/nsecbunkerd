@@ -451,6 +451,42 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
           }
         }
 
+        // POST /testing/corrupt-key
+        if (url.pathname === '/testing/corrupt-key' && req.method === 'POST') {
+          try {
+            const body = (await req.json()) as any
+            const { keyName } = body
+
+            if (!keyName) {
+              return Response.json({ error: 'keyName is required' }, { status: 400, headers })
+            }
+
+            const key = await prisma.key.findUnique({
+              where: { keyName }
+            })
+
+            if (!key) {
+              return Response.json({ error: `Key not found: ${keyName}` }, { status: 404, headers })
+            }
+
+            const originalEncrypted = key.encryptedKey
+            if (originalEncrypted.length < 32) {
+              return Response.json({ error: 'Key ciphertext too short to corrupt' }, { status: 400, headers })
+            }
+
+            const corruptedEncrypted = originalEncrypted.slice(0, -32) + '0'.repeat(32)
+            await prisma.key.update({
+              where: { keyName },
+              data: { encryptedKey: corruptedEncrypted }
+            })
+
+            log.http(`🧪 Testing: corrupted key row ${keyName}`)
+            return Response.json({ success: true, corrupted: true, keyName }, { headers })
+          } catch (e: any) {
+            return Response.json({ error: e.message }, { status: 500, headers })
+          }
+        }
+
         // GET /testing/events/received
         if (url.pathname === '/testing/events/received' && req.method === 'GET') {
           const method = url.searchParams.get('method')
