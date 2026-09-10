@@ -1,7 +1,5 @@
 import { checkpointService } from '../../services/CheckpointService.js'
 import prisma from '../../db.js'
-import { nip19, utils } from 'nostr-tools'
-const { bytesToHex } = utils
 import { NDKEvent, NDKPrivateKeySigner, NDKMlDsaSigner } from '@nostr-dev-kit/ndk'
 import { identityIdFromPublicKey, keygen } from 'verity-event-data-module'
 import { Server } from 'bun'
@@ -56,10 +54,10 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
         if (url.pathname === '/testing/register' && req.method === 'POST') {
           try {
             const body = await req.json() as any
-            const { keyName, nsec, pubkey, clientPubkey, clientEncPubkey, createdAt, identityKey, encKey } = body
-            
-            if (!keyName || (!nsec && !identityKey) || (!pubkey && !identityKey)) {
-              return Response.json({ error: 'keyName, and key material are required' }, { status: 400, headers })
+            const { keyName, clientPubkey, clientEncPubkey, createdAt, identityKey, encKey } = body
+
+            if (!keyName || !identityKey) {
+              return Response.json({ error: 'keyName and identityKey are required' }, { status: 400, headers })
             }
 
             const { storeKey, retrieveKey } = await import('../../services/KeyService.js')
@@ -67,19 +65,8 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
 
             checkpointService.broadcast('signer.testing.register.received', { keyName, clientPubkey })
 
-            let identitySecretHex: string
-            let identityPubkeyHex: string
-            if (identityKey) {
-              identitySecretHex = identityKey.secretKey
-              identityPubkeyHex = identityKey.publicKey
-            } else if (nsec && pubkey) {
-              identitySecretHex = nsec.startsWith('nsec1')
-                ? Buffer.from(nip19.decode(nsec).data as Uint8Array).toString('hex')
-                : nsec
-              identityPubkeyHex = pubkey
-            } else {
-              return Response.json({ error: 'identityKey or nsec+pubkey required' }, { status: 400, headers })
-            }
+            const identitySecretHex: string = identityKey.secretKey
+            const identityPubkeyHex: string = identityKey.publicKey
 
             const isMlDsa = identitySecretHex.length === 5120 || identityPubkeyHex.length === 2624
             if (!isMlDsa) {

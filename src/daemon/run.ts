@@ -12,7 +12,7 @@ import { log, auditSigningRequest, logStartup, logError } from '../lib/logger.js
 import { Backend } from './backend/index.js'
 import { IMethod, checkIfPubkeyAllowed } from './lib/acl/index.js'
 import AdminInterface from './admin/index.js'
-import { IConfig, validateDaemonEnvironment, isLegacyConfigFile } from '../config/index.js'
+import { IConfig, validateDaemonEnvironment } from '../config/index.js'
 import { NDKRpcRequest } from '@nostr-dev-kit/ndk'
 import prisma from '../db.js'
 // Force rebuild for logging
@@ -238,12 +238,6 @@ export class Daemon {
   }
 
   async start() {
-    // Validate daemon configuration against legacy shapes
-    if (this.config && isLegacyConfigFile(this.config)) {
-      logError('daemon', 'FATAL: Daemon configuration contains legacy key material (admin.key / keys.admin / npubs).')
-      process.exit(1)
-    }
-
     // Validate daemon environment variables against SSOT requirements
     const envResult = validateDaemonEnvironment(process.env)
     if (!envResult.valid) {

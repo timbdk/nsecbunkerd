@@ -219,22 +219,13 @@ export class VerityConnectStrategy implements IEventHandlingStrategy {
 }
 
 export class Backend extends NDKNip46Backend {
-  public identitySigner: NDKMlDsaSigner | NDKPrivateKeySigner
+  public identitySigner: NDKMlDsaSigner
   public encSigner?: NDKPrivateKeySigner
 
   constructor(ndk: NDK, family: KeyFamily, cb: Nip46PermitCallback, config: IConfig) {
-    const isMlDsa = family.identity.algorithm === 'ml-dsa-44'
-    const identitySigner = isMlDsa
-      ? new NDKMlDsaSigner(family.identity.privateKeyHex)
-      : new NDKPrivateKeySigner(family.identity.privateKeyHex)
-
-    const encSigner = family.enc
-      ? new NDKPrivateKeySigner(family.enc.privateKeyHex)
-      : (!isMlDsa ? (identitySigner as NDKPrivateKeySigner) : undefined)
-
-    const credential = isMlDsa && encSigner
-      ? new NDKTransportCredential(identitySigner as NDKMlDsaSigner, encSigner, ndk)
-      : identitySigner
+    const identitySigner = new NDKMlDsaSigner(family.identity.privateKeyHex)
+    const encSigner = family.enc ? new NDKPrivateKeySigner(family.enc.privateKeyHex) : undefined
+    const credential = encSigner ? new NDKTransportCredential(identitySigner, encSigner, ndk) : identitySigner
 
     super(ndk, credential, cb, [])
     this.identitySigner = identitySigner

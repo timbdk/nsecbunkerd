@@ -14,6 +14,10 @@ The signer daemon is configured primarily through environment variables.
 | `SIGNER_DAEMON_KEY` | Hex (5,120 chars) | Daemon ML-DSA-44 secret key. Serves as the consolidated service signing identity for both the daemon NDK and admin interfaces, and signs platform endorsements. |
 | `SIGNER_DAEMON_ECDH_KEY` | Hex (64 chars) | Classical secp256k1 secret key used for daemon NIP-44/ECDH encryption operations. |
 | `VERITY_PLATFORM_ID` | Hex (64 chars) | Platform root key identifier (SHA-256 hash). Required for verifying platform chain endorsements. |
+| `REGISTRAR_UID` | Hex (64 chars) | Registrar service identity allowed to send admin commands. |
+| `REGISTRAR_ECDH_PUBKEY` | Hex (64 chars) | Registrar's classical secp256k1 public key for encrypted admin envelopes. |
+| `AUTHORIZER_UID` | Hex (64 chars) | Authorizer service identity allowed to send admin commands. |
+| `AUTHORIZER_ECDH_PUBKEY` | Hex (64 chars) | Authorizer's classical secp256k1 public key for encrypted admin envelopes. |
 
 ## Optional Environment Variables
 

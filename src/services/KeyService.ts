@@ -82,8 +82,8 @@ export async function storeKey(
   keyName: string,
   privateKeyHex: string,
   pubkey: string,
-  algorithm: string = 'secp256k1-nip44',
-  role: string = 'identity',
+  algorithm: string,
+  role: string,
   parentKeyName?: string | null
 ): Promise<void> {
   const { encryptedKey, iv, authTag } = encryptPrivateKey(privateKeyHex, keyName)
@@ -172,13 +172,6 @@ export async function resolveKeyFamily(identityKeyName: string): Promise<KeyFami
         privateKeyHex: encPrivateKeyHex,
         algorithm: encRow.algorithm
       }
-    }
-  } else if (identityRow.algorithm.startsWith('secp256k1')) {
-    enc = {
-      keyName: identityRow.keyName,
-      pubkey: identityRow.pubkey,
-      privateKeyHex: identityPrivateKeyHex,
-      algorithm: 'secp256k1-nip44'
     }
   }
 
