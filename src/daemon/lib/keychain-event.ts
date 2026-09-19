@@ -23,7 +23,7 @@ import { log } from '../../lib/logger.js'
 import { checkpointService } from '../../services/CheckpointService.js'
 
 /** Timeout for relay queries */
-const RELAY_QUERY_TIMEOUT_MS = 10_000
+const RELAY_QUERY_TIMEOUT_MS = 5000
 
 // ── Endorsement Construction ─────────────────────────────────────────────────
 
@@ -52,22 +52,29 @@ export async function queryExistingGenesisEntry(
   ndk: NDK,
   uid: string
 ): Promise<NDKEvent | null> {
-  const events = await ndk.fetchEvents({
+  const queryPromise = ndk.fetchEvent({
     kinds: [297 as any],
     authors: [uid],
     '#v': ['genesis']
   })
-  return Array.from(events)[0] ?? null
+  const timeoutPromise = new Promise<null>((resolve) =>
+    setTimeout(() => resolve(null), RELAY_QUERY_TIMEOUT_MS)
+  )
+  return Promise.race([queryPromise, timeoutPromise])
 }
 
 export async function queryCurrentIdentityEntry(
   ndk: NDK,
   uid: string
 ): Promise<ChainEntry | null> {
-  const eventsSet = await ndk.fetchEvents({
+  const eventsPromise = ndk.fetchEvents({
     kinds: [297 as any],
     authors: [uid]
   })
+  const timeoutPromise = new Promise<Set<NDKEvent>>((resolve) =>
+    setTimeout(() => resolve(new Set()), RELAY_QUERY_TIMEOUT_MS)
+  )
+  const eventsSet = await Promise.race([eventsPromise, timeoutPromise])
 
   const events: any[] = []
   for (const ev of eventsSet) {
@@ -235,7 +242,6 @@ export async function publishGenesisEntry(
       const retryRelaySet = NDKRelaySet.fromRelayUrls(relayUrls, ndk)
       published = await event.publish(retryRelaySet, DEFAULT_PUBLISH_TIMEOUT_MS)
     }
-
     if (published.size === 0) {
       throw new Error(`Not enough relays received the Kind 297 event (0 published, ${relayUrls.length} required)`)
     }

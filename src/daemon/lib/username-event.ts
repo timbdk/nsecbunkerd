@@ -159,6 +159,10 @@ async function queryExistingUsernameEvent(
     authors: [uid]
   }
 
-  const event = await ndk.fetchEvent(filter as any)
+  const queryPromise = ndk.fetchEvent(filter as any)
+  const timeoutPromise = new Promise<null>((resolve) =>
+    setTimeout(() => resolve(null), 5000)
+  )
+  const event = await Promise.race([queryPromise, timeoutPromise])
   return !!event
 }
