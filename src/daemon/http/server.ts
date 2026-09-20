@@ -1,6 +1,6 @@
 import { checkpointService } from '../../services/CheckpointService.js'
 import prisma from '../../db.js'
-import { NDKEvent, NDKPrivateKeySigner, NDKMlDsaSigner } from '@nostr-dev-kit/ndk'
+import { NDKEvent, NDKPrivateKeySigner, NDKMlDsaSigner, DEFAULT_PUBLISH_TIMEOUT_MS } from '@nostr-dev-kit/ndk'
 import { identityIdFromPublicKey, keygen } from 'verity-event-data-module'
 import { Server } from 'bun'
 import { log, logError } from '../../lib/logger.js'
@@ -165,7 +165,7 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
 
               await attestationEvent.sign(testSigner)
               const relaySet = NDKRelaySet.fromRelayUrls(daemon.config.nostr.relays, daemon.ndk)
-              await attestationEvent.publish(relaySet)
+              await attestationEvent.publish(relaySet, DEFAULT_PUBLISH_TIMEOUT_MS)
               checkpointService.broadcast('signer.testing.identity_attested', {
                 devicePubkey: clientPubkey.substring(0, 16),
                 userPubkey: identityPubkeyHex.substring(0, 16)
@@ -523,6 +523,12 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
           const { auditService } = await import('../../services/AuditService.js')
           auditService.clear()
           return Response.json({ cleared: true }, { headers })
+        }
+
+        // POST /testing/reset-checkpoints
+        if (url.pathname === '/testing/reset-checkpoints' && req.method === 'POST') {
+          checkpointService.reset()
+          return Response.json({ ok: true }, { headers })
         }
 
         // GET /testing/health/relay

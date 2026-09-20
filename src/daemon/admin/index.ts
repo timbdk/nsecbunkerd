@@ -10,7 +10,8 @@ import NDK, {
   NDKTransportCredential,
   NDKUser,
   NostrEvent,
-  NDKNostrRpc
+  NDKNostrRpc,
+  DEFAULT_PUBLISH_TIMEOUT_MS
 } from '@nostr-dev-kit/ndk'
 import {
   KIND_ADMIN_COMMAND, KIND_ADMIN_RESPONSE,
@@ -47,6 +48,10 @@ class AdminInterface {
   readonly rpc: NDKNostrRpc
   public loadKey?: (keyName: string, rawHex: string, algorithm?: string) => void
   public getPlatformServiceEntryId?: () => string | null
+  public readonly ready: Promise<void>
+  private resolveReady!: () => void
+  private rejectReady!: (err: any) => void
+  private adminSub?: any
 
   public readonly opts: IAdminOpts
   private configData: IConfig
@@ -56,6 +61,11 @@ class AdminInterface {
     this.opts = opts
     this.configData = configData
     this.allowedUids = opts.allowedUids || []
+
+    this.ready = new Promise<void>((resolve, reject) => {
+      this.resolveReady = resolve
+      this.rejectReady = reject
+    })
 
     const daemonKey = process.env.SIGNER_DAEMON_KEY
     if (!daemonKey) {
@@ -75,17 +85,28 @@ class AdminInterface {
       explicitRelayUrls: opts.adminRelays,
       enableOutboxModel: false,
       autoConnectUserRelays: false,
+      defaultPublishTimeoutMs: DEFAULT_PUBLISH_TIMEOUT_MS,
       signer: credential
     })
     // Enable NIP-42 auto-auth for admin relay connections
     this.ndk.relayAuthDefaultPolicy = NDKRelayAuthPolicies.signIn({ ndk: this.ndk })
-    this.rpcSigner.user().then((user: NDKUser) => {
-      this.validateAdminIdentity(user)
-      this.signerUser = user
-      this.connect()
-    })
+    this.rpcSigner
+      .user()
+      .then((user: NDKUser) => {
+        this.validateAdminIdentity(user)
+        this.signerUser = user
+        return this.connect()
+      })
+      .then(() => {
+        this.resolveReady()
+      })
+      .catch((err) => {
+        logError('admin', 'Failed to initialize admin interface', err)
+        this.rejectReady(err)
+      })
 
-    this.rpc = new NDKNostrRpc(this.ndk, this.rpcSigner, log.admin)
+    this.rpc = new NDKNostrRpc(this.ndk, this.rpcSigner, log.admin, opts.adminRelays)
+    this.rpc.on('request', (req) => this.handleRequest(req))
     this.rpc.adminEcdhPubkeys = new Map<string, string>()
     const regUid = opts.registrarUid || process.env.REGISTRAR_UID
     const regEcdh = opts.registrarEcdhPubkey || process.env.REGISTRAR_ECDH_PUBKEY
@@ -107,31 +128,38 @@ class AdminInterface {
     return identityIdFromPublicKey((await this.rpcSigner.user()).pubkey)
   }
 
-  private connect() {
+  private async connect() {
     if (this.allowedUids.length <= 0 && !this.opts.registrarUid) {
       log.admin(`❌ Admin interface not starting because no admin uids/registrarUid were provided`)
+      this.resolveReady()
       return
     }
 
     this.ndk.pool.on('relay:connect', (r) => log.admin(`✅ nsecBunker Admin Interface ready (connected to ${r.url})`))
     this.ndk.pool.on('relay:disconnect', (r) => log.admin(`❌ admin disconnected from ${r.url}`))
-    
-    this.ndk
-      .connect(2500)
-      .then(() => {
-        // Subscribe only to admin commands. Responses use KIND_ADMIN_RESPONSE
-        // and are published by us, not consumed.
-        const signerUid = identityIdFromPublicKey(this.signerUser!.pubkey)
-        this.rpc.subscribe({
-          kinds: [KIND_ADMIN_COMMAND as number],
-          '#p': [signerUid]
-        })
 
-        this.rpc.on('request', (req) => this.handleRequest(req))
-      })
-      .catch((err) => {
-        logError('admin', 'admin connection failed', err)
-      })
+    const ADMIN_CONNECT_TIMEOUT_MS = 5000
+    const ADMIN_RETRY_DELAY_MS = 2000
+
+    let connected = false
+    let attempts = 0
+    while (!connected) {
+      try {
+        attempts++
+        await this.ndk.connect(ADMIN_CONNECT_TIMEOUT_MS)
+        connected = true
+      } catch (err: any) {
+        logError('admin', `Admin connection attempt ${attempts} failed, retrying...`, err)
+        await new Promise((resolve) => setTimeout(resolve, ADMIN_RETRY_DELAY_MS))
+      }
+    }
+
+    const signerUid = identityIdFromPublicKey(this.signerUser!.pubkey)
+    log.admin(`Subscribing to admin commands for ${signerUid.substring(0, 16)}...`)
+    this.adminSub = await this.rpc.subscribe({
+      kinds: [KIND_ADMIN_COMMAND as number],
+      '#p': [signerUid]
+    })
   }
 
   private async handleRequest(req: NDKRpcRequest) {

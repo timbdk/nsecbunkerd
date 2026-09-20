@@ -6,7 +6,7 @@
 
 // ── Imports ──────────────────────────────────────────────────────────────────
 
-import NDK, { NDKEvent, NDKPrivateKeySigner, NDKMlDsaSigner, NDKRelayAuthPolicies, NDKRelaySet, NDKSigner } from '@nostr-dev-kit/ndk'
+import NDK, { NDKEvent, NDKPrivateKeySigner, NDKMlDsaSigner, NDKRelayAuthPolicies, NDKRelaySet, NDKRelayStatus, NDKSigner, DEFAULT_PUBLISH_TIMEOUT_MS } from '@nostr-dev-kit/ndk'
 import {
   Kind297KeyChain,
   identityIdFromPublicKey,
@@ -98,7 +98,6 @@ export async function queryCurrentIdentityEntry(
  * Publishes a Kind 297 genesis event for a new user identity (idempotent).
  * Signed by the user's identity key and endorsed by the daemon key.
  */
-const NDK_RELAY_STATUS_AUTHENTICATED = 8
 
 export async function publishGenesisEntry(
   userSigner: NDKSigner,
@@ -135,17 +134,20 @@ export async function publishGenesisEntry(
     ndk.relayAuthDefaultPolicy = NDKRelayAuthPolicies.signIn({ ndk })
 
     await ndk.connect(5000)
+  }
 
-    const relay = Array.from(ndk.pool.relays.values())[0] as any
-    if (relay) {
-      let authAttempts = 0
-      while (relay.status < NDK_RELAY_STATUS_AUTHENTICATED && authAttempts < 50) {
-        await new Promise((resolve) => setTimeout(resolve, 100))
-        authAttempts++
-      }
-      if (relay.status < NDK_RELAY_STATUS_AUTHENTICATED) {
-        log.admin(`Warning: relay auth not confirmed (status: ${relay.status}) for Kind 297 publish`)
-      }
+  const relay = Array.from(ndk.pool.relays.values())[0] as any
+  if (relay) {
+    if (relay.status < NDKRelayStatus.CONNECTED) {
+      await ndk.connect(5000).catch(() => {})
+    }
+    let authAttempts = 0
+    while (relay.status < NDKRelayStatus.AUTHENTICATED && authAttempts < 50) {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      authAttempts++
+    }
+    if (relay.status < NDKRelayStatus.AUTHENTICATED) {
+      log.admin(`Warning: relay auth not confirmed (status: ${relay.status}) for Kind 297 publish`)
     }
   }
 
@@ -224,7 +226,16 @@ export async function publishGenesisEntry(
     })
 
     const relaySet = NDKRelaySet.fromRelayUrls(relayUrls, ndk)
-    const published = await event.publish(relaySet)
+    let published: Set<any>
+    try {
+      published = await event.publish(relaySet, DEFAULT_PUBLISH_TIMEOUT_MS)
+    } catch (publishErr: any) {
+      log.admin(`Retrying Kind 297 publish for ${uid.substring(0, 16)}... after error: ${publishErr?.message || publishErr}`)
+      await ndk.connect(5000).catch(() => {})
+      const retryRelaySet = NDKRelaySet.fromRelayUrls(relayUrls, ndk)
+      published = await event.publish(retryRelaySet, DEFAULT_PUBLISH_TIMEOUT_MS)
+    }
+
     if (published.size === 0) {
       throw new Error(`Not enough relays received the Kind 297 event (0 published, ${relayUrls.length} required)`)
     }
@@ -351,7 +362,7 @@ export async function publishDelegateEntry(
     })
 
     const relaySet = NDKRelaySet.fromRelayUrls(relayUrls, ndk)
-    const published = await event.publish(relaySet)
+    const published = await event.publish(relaySet, DEFAULT_PUBLISH_TIMEOUT_MS)
     if (published.size === 0) {
       throw new Error(`Not enough relays received the Kind 297 delegate event (0 published, ${relayUrls.length} required)`)
     }
@@ -461,7 +472,7 @@ export async function publishRevokeEntry(
     })
 
     const relaySet = NDKRelaySet.fromRelayUrls(relayUrls, ndk)
-    const published = await event.publish(relaySet)
+    const published = await event.publish(relaySet, DEFAULT_PUBLISH_TIMEOUT_MS)
     if (published.size === 0) {
       throw new Error(`Not enough relays received the Kind 297 revoke event (0 published, ${relayUrls.length} required)`)
     }

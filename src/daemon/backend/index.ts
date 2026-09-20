@@ -227,7 +227,7 @@ export class Backend extends NDKNip46Backend {
     const encSigner = family.enc ? new NDKPrivateKeySigner(family.enc.privateKeyHex) : undefined
     const credential = encSigner ? new NDKTransportCredential(identitySigner, encSigner, ndk) : identitySigner
 
-    super(ndk, credential, cb, [])
+    super(ndk, credential, cb, config.nostr.relays)
     this.identitySigner = identitySigner
     this.encSigner = encSigner
 

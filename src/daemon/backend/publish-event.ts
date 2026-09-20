@@ -1,4 +1,4 @@
-import { NDKNip46Backend } from '@nostr-dev-kit/ndk'
+import { NDKNip46Backend, DEFAULT_PUBLISH_TIMEOUT_MS } from '@nostr-dev-kit/ndk'
 import { IEventHandlingStrategy } from '@nostr-dev-kit/ndk'
 import { log } from '../../lib/logger.js'
 
@@ -8,7 +8,7 @@ export default class PublishEventHandlingStrategy implements IEventHandlingStrat
     if (!event) return undefined
 
     log.backend('Publishing event', event)
-    await event.publish()
+    await event.publish(undefined, DEFAULT_PUBLISH_TIMEOUT_MS)
 
     return JSON.stringify(await event.toNostrEvent())
   }

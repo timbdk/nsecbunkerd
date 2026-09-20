@@ -21,7 +21,7 @@ class CheckpointService {
   // Subscribers pass ?since=<ts> to receive only the events newer than what
   // they already saw, so stale events never replay.
   private readonly recentCheckpoints: { ts: number; payload: string }[] = []
-  private readonly maxBuffer = 500
+  private readonly maxBuffer = 2000
 
   /**
    * Start the WebSocket server. Call once from Daemon.start().
@@ -118,6 +118,14 @@ class CheckpointService {
     }
 
     log.daemon(`Checkpoint Broadcast: ${step} (${this.clients.size} clients)`)
+  }
+
+  /**
+   * Reset the ring buffer of checkpoints.
+   * Called between test scenarios to prevent cross-scenario checkpoint leakage.
+   */
+  reset(): void {
+    this.recentCheckpoints.length = 0
   }
 }
 

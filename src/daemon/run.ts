@@ -356,6 +356,7 @@ export class Daemon {
       this.httpServer = startHttpServer(this, this.config.authPort, this.config.authHost)
     }
     await this.startKeys()
+    await this.adminInterface?.ready
 
     this.isReady = true
     logStartup('nsecBunker ready to serve requests')

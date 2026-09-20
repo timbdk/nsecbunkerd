@@ -1,4 +1,4 @@
-import NDK, { NDKMlDsaSigner, NDKPrivateKeySigner, NDKRelayAuthPolicies, NDKSigner } from '@nostr-dev-kit/ndk'
+import NDK, { NDKMlDsaSigner, NDKPrivateKeySigner, NDKRelayAuthPolicies, NDKSigner, DEFAULT_PUBLISH_TIMEOUT_MS } from '@nostr-dev-kit/ndk'
 import { Kind723Invited, identityIdFromPublicKey } from 'verity-event-data-module'
 import { log } from '../../lib/logger.js'
 import { checkpointService } from '../../services/CheckpointService.js'
@@ -60,6 +60,7 @@ export async function publishInvitedEvent(
     if (!isMlDsa) {
       throw new Error('ML-DSA-44 required for inviter')
     }
+    const inviterPubkeyBytes = Buffer.from(inviterPubkey, 'hex')
     const key = kid ? undefined : ('ml-dsa-44:' + inviterPubkeyBytes.toString('base64'))
     const uid = identityIdFromPublicKey(inviterPubkey)
     const inviteeUid = /^[0-9a-fA-F]{64}$/.test(inviteePubkey)
@@ -88,7 +89,7 @@ export async function publishInvitedEvent(
       kid,
       key
     })
-    const published = await event.publish()
+    const published = await event.publish(undefined, DEFAULT_PUBLISH_TIMEOUT_MS)
 
     if (published.size === 0) {
       throw new Error(`Not enough relays received the event (0 published, ${relayUrls.length} required)`)

@@ -1,4 +1,4 @@
-import NDK, { NDKMlDsaSigner, NDKPrivateKeySigner, NDKRelayAuthPolicies, NDKRelaySet, NDKSigner } from '@nostr-dev-kit/ndk'
+import NDK, { NDKMlDsaSigner, NDKPrivateKeySigner, NDKRelayAuthPolicies, NDKRelaySet, NDKRelayStatus, NDKSigner, DEFAULT_PUBLISH_TIMEOUT_MS } from '@nostr-dev-kit/ndk'
 import { Kind415UsernameRegistration, identityIdFromPublicKey } from 'verity-event-data-module'
 import { log } from '../../lib/logger.js'
 import { checkpointService } from '../../services/CheckpointService.js'
@@ -22,7 +22,6 @@ import { checkpointService } from '../../services/CheckpointService.js'
  * 4. If not found → sign with user's key and publish
  * 5. If relay unreachable → throw (pg-boss will retry the full job)
  */
-const NDK_RELAY_STATUS_AUTHENTICATED = 8
 
 export async function publishUsernameEvent(
   userSigner: NDKSigner,
@@ -61,17 +60,20 @@ export async function publishUsernameEvent(
     ndk.relayAuthDefaultPolicy = NDKRelayAuthPolicies.signIn({ ndk })
 
     await ndk.connect(5000)
+  }
 
-    const relay = Array.from(ndk.pool.relays.values())[0] as any
-    if (relay) {
-      let authAttempts = 0
-      while (relay.status < NDK_RELAY_STATUS_AUTHENTICATED && authAttempts < 50) {
-        await new Promise(resolve => setTimeout(resolve, 100))
-        authAttempts++
-      }
-      if (relay.status < NDK_RELAY_STATUS_AUTHENTICATED) {
-        log.admin(`Warning: relay auth not confirmed (status: ${relay.status}) for Kind 415 publish`)
-      }
+  const relay = Array.from(ndk.pool.relays.values())[0] as any
+  if (relay) {
+    if (relay.status < NDKRelayStatus.CONNECTED) {
+      await ndk.connect(5000).catch(() => {})
+    }
+    let authAttempts = 0
+    while (relay.status < NDKRelayStatus.AUTHENTICATED && authAttempts < 50) {
+      await new Promise(resolve => setTimeout(resolve, 100))
+      authAttempts++
+    }
+    if (relay.status < NDKRelayStatus.AUTHENTICATED) {
+      log.admin(`Warning: relay auth not confirmed (status: ${relay.status}) for Kind 415 publish`)
     }
   }
 
@@ -115,7 +117,15 @@ export async function publishUsernameEvent(
 
     log.admin(`Publishing Kind 415 for ${username} (id: ${event.id}, kid: ${event.kid}, uid: ${event.uid})`)
     const relaySet = NDKRelaySet.fromRelayUrls(relayUrls, ndk)
-    const published = await event.publish(relaySet)
+    let published: Set<any>
+    try {
+      published = await event.publish(relaySet, DEFAULT_PUBLISH_TIMEOUT_MS)
+    } catch (publishErr: any) {
+      log.admin(`Retrying Kind 415 publish for ${username} after error: ${publishErr?.message || publishErr}`)
+      await ndk.connect(5000).catch(() => {})
+      const retryRelaySet = NDKRelaySet.fromRelayUrls(relayUrls, ndk)
+      published = await event.publish(retryRelaySet, DEFAULT_PUBLISH_TIMEOUT_MS)
+    }
 
     if (published.size === 0) {
       throw new Error(`Not enough relays received the event (0 published, ${relayUrls.length} required)`)
