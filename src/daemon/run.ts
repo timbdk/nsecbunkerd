@@ -23,6 +23,7 @@ import { verifyPlatformChain, findServiceEntry, publicKeyFromSecret } from 'veri
 import { sha256 } from '@noble/hashes/sha2.js'
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js'
 import { KeyFamily, resolveKeyFamily } from '../services/KeyService.js'
+import { TransportKemManager } from './lib/transport-kem.js'
 
 // Inject serialization prefix from environment (FATAL if missing)
 if (!process.env.VERITY_SERIALIZATION_PREFIX) {
@@ -115,9 +116,17 @@ export class Daemon {
   public isReady: boolean = false
   public platformId: string = ''
   public platformServiceEntryId: string | null = null
+  public transportKemManager!: TransportKemManager
+  public backends: Map<string, Backend> = new Map()
 
   constructor(config: DaemonConfig) {
     this.config = config
+    if (process.env.SIGNER_TRANSPORT_KEM_KEY) {
+      this.transportKemManager = new TransportKemManager(
+        process.env.SIGNER_TRANSPORT_KEM_KEY,
+        process.env.SIGNER_TRANSPORT_KEM_OVERLAP_KEY
+      )
+    }
     const registrarUid = process.env.REGISTRAR_UID
     const registrarEcdhPubkey = process.env.REGISTRAR_ECDH_PUBKEY
     const authorizerUid = process.env.AUTHORIZER_UID
@@ -248,6 +257,7 @@ export class Daemon {
     logStartup('SIGNER_KEK validated')
     logStartup('SIGNER_DAEMON_KEY validated')
     logStartup('SIGNER_DAEMON_ECDH_KEY validated')
+    logStartup('SIGNER_TRANSPORT_KEM_KEY validated')
     if (process.env.SIGNER_UID) {
       logStartup('SIGNER_UID verified against derived daemon key')
     }
@@ -352,6 +362,35 @@ export class Daemon {
       }
     }
 
+    // Transport KEM announcement publication with retry loop
+    if (!this.transportKemManager) {
+      logError('daemon', '[FATAL] Transport KEM manager not initialized — check SIGNER_TRANSPORT_KEM_KEY')
+      process.exit(1)
+    }
+
+    let announcementPublished = false
+    let announcementAttempts = 0
+    const daemonSigner = new NDKMlDsaSigner(daemonKey)
+
+    while (!announcementPublished) {
+      announcementAttempts++
+      log.daemon(`Publishing transport KEM announcement (attempt ${announcementAttempts})...`)
+      try {
+        await this.transportKemManager.publishAnnouncement(
+          this.ndk,
+          daemonSigner,
+          daemonKey,
+          this.config.nostr.relays
+        )
+        announcementPublished = true
+        logStartup(`✅ Transport KEM announcement published (or confirmed current)`)
+      } catch (e: any) {
+        logError('daemon', `Transport KEM announcement attempt ${announcementAttempts} failed: ${e.message}`)
+        log.daemon(`Retrying announcement publication in ${RETRY_DELAY_MS}ms...`)
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS))
+      }
+    }
+
     if (this.config.authPort) {
       this.httpServer = startHttpServer(this, this.config.authPort, this.config.authHost)
     }
@@ -386,7 +425,15 @@ export class Daemon {
   async startFamily(family: KeyFamily) {
     const cb = signingAuthorizationCallback(family.identity.keyName)
     const backend = new Backend(this.ndk, family, cb, this.config)
+    this.backends.set(family.identity.keyName, backend)
     await backend.start()
+  }
+
+  updateUserKemFamily(keyName: string, kem: KeyFamily['kem']) {
+    const backend = this.backends.get(keyName)
+    if (backend) {
+      backend.updateKemFamily(kem)
+    }
   }
 
   /**
@@ -412,6 +459,7 @@ export class Daemon {
         cb,
         this.config
       )
+      this.backends.set(name, backend)
       await backend.start()
     }
   }

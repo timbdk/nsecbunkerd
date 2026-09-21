@@ -11,8 +11,9 @@ import NDK, {
 import { IConfig } from '../../config/index.js'
 import type { KeyFamily } from '../../services/KeyService.js'
 import { queryCurrentIdentityEntry } from '../lib/keychain-event.js'
-import { identityIdFromPublicKey } from 'verity-event-data-module'
+import { identityIdFromPublicKey, kemDecrypt } from 'verity-event-data-module'
 import { log } from '../../lib/logger.js'
+import { checkpointService } from '../../services/CheckpointService.js'
 import prisma from '../../db.js'
 import { base64 } from '@scure/base'
 import { bytesToHex } from '@noble/hashes/utils.js'
@@ -149,6 +150,66 @@ export class VerityNip44DecryptStrategy implements IEventHandlingStrategy {
   }
 }
 
+export class VerityKemDecryptStrategy implements IEventHandlingStrategy {
+  constructor(
+    private backend: Backend,
+    private family: KeyFamily,
+    private decapsulate: (secretKeyHex: string, payload: string) => string = kemDecrypt
+  ) {}
+
+  async handle(backend: NDKNip46Backend, id: string, remotePubkey: string, params: string[]): Promise<string | undefined> {
+    if (!params || params.length !== 1 || typeof params[0] !== 'string' || !params[0]) {
+      throw new Error('Invalid parameters: kem_decrypt requires exactly [value]')
+    }
+
+    const [payload] = params
+
+    if (
+      !(await backend.pubkeyAllowed({
+        id,
+        pubkey: remotePubkey,
+        method: 'kem_decrypt',
+        params: payload
+      }))
+    ) {
+      return undefined
+    }
+
+    const kemFamily = this.backend.family?.kem ?? this.family.kem
+
+    const candidateKeys: string[] = []
+    if (kemFamily?.active?.privateKeyHex) {
+      candidateKeys.push(kemFamily.active.privateKeyHex)
+    }
+    if (kemFamily?.retired && kemFamily.retired.length > 0) {
+      for (const member of kemFamily.retired) {
+        if (member.privateKeyHex) {
+          candidateKeys.push(member.privateKeyHex)
+        }
+      }
+    }
+
+    if (candidateKeys.length === 0) {
+      throw new Error('No KEM key configured for account')
+    }
+
+    for (const secretKeyHex of candidateKeys) {
+      try {
+        const decrypted = this.decapsulate(secretKeyHex, payload)
+        checkpointService.broadcast('signer.kem_decrypt.completed', {
+          keyName: this.family.identity.keyName.substring(0, 16),
+          id
+        })
+        return decrypted
+      } catch {
+        // Try next candidate key
+      }
+    }
+
+    throw new Error('AEAD decryption failed: no matching active or retired KEM key')
+  }
+}
+
 export class VerityConnectStrategy implements IEventHandlingStrategy {
   constructor(private backend: Backend, private family: KeyFamily) {}
 
@@ -221,6 +282,7 @@ export class VerityConnectStrategy implements IEventHandlingStrategy {
 export class Backend extends NDKNip46Backend {
   public identitySigner: NDKMlDsaSigner
   public encSigner?: NDKPrivateKeySigner
+  public family: KeyFamily
 
   constructor(ndk: NDK, family: KeyFamily, cb: Nip46PermitCallback, config: IConfig) {
     const identitySigner = new NDKMlDsaSigner(family.identity.privateKeyHex)
@@ -230,11 +292,13 @@ export class Backend extends NDKNip46Backend {
     super(ndk, credential, cb, config.nostr.relays)
     this.identitySigner = identitySigner
     this.encSigner = encSigner
+    this.family = family
 
     this.setStrategy('connect', new VerityConnectStrategy(this, family))
     this.setStrategy('sign_event', new VeritySignEventStrategy(this, family))
     this.setStrategy('nip44_encrypt', new VerityNip44EncryptStrategy(this, family))
     this.setStrategy('nip44_decrypt', new VerityNip44DecryptStrategy(this, family))
+    this.setStrategy('kem_decrypt', new VerityKemDecryptStrategy(this, family))
 
     this.rpc.resolvePeerEcdhPubkey = async (clientPubkey: string) => {
       const normalizedPubkey = clientPubkey.length === 2624 ? identityIdFromPublicKey(clientPubkey) : clientPubkey
@@ -247,5 +311,9 @@ export class Backend extends NDKNip46Backend {
       })
       return session?.clientEncPubkey ?? undefined
     }
+  }
+
+  updateKemFamily(kem: KeyFamily['kem']) {
+    this.family.kem = kem
   }
 }

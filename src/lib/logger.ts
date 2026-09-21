@@ -118,10 +118,10 @@ export function logError(namespace: keyof typeof log, message: string, error?: a
 // ENABLE DEBUG IN DEVELOPMENT
 // ============================================================================
 
-// Auto-enable all signer logs in development/testing
-if (process.env.NODE_ENV !== 'production') {
-  // Enable all signer namespaces if DEBUG not already set
-  if (!process.env.DEBUG) {
+// Auto-enable all signer logs in development/testing (except when running in test mode)
+if (process.env.NODE_ENV !== 'production' && process.env.NODE_ENV !== 'test') {
+  // Enable all signer namespaces only if DEBUG is not explicitly configured
+  if (process.env.DEBUG === undefined) {
     createDebug.enable('signer:*')
   }
 }

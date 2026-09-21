@@ -91,6 +91,7 @@ export type IMethod =
   | 'sign_event'
   | 'nip44_encrypt'
   | 'nip44_decrypt'
+  | 'kem_decrypt'
   | 'ping'
   | 'switch_relays'
   | 'get_public_key'

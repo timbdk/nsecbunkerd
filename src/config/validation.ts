@@ -80,6 +80,28 @@ export function validateDaemonEnvironment(env: NodeJS.ProcessEnv): DaemonEnvVali
     }
   }
 
+  const transportKemKey = env.SIGNER_TRANSPORT_KEM_KEY
+  if (!transportKemKey) {
+    return {
+      valid: false,
+      error: 'CRITICAL: SIGNER_TRANSPORT_KEM_KEY environment variable not set'
+    }
+  }
+  if (transportKemKey.length !== 4800 || !/^[0-9a-fA-F]{4800}$/.test(transportKemKey)) {
+    return {
+      valid: false,
+      error: 'CRITICAL: SIGNER_TRANSPORT_KEM_KEY must be a 4800-character hex string (ML-KEM-768 secret key)'
+    }
+  }
+
+  const overlapKemKey = env.SIGNER_TRANSPORT_KEM_OVERLAP_KEY
+  if (overlapKemKey && (overlapKemKey.length !== 4800 || !/^[0-9a-fA-F]{4800}$/.test(overlapKemKey))) {
+    return {
+      valid: false,
+      error: 'CRITICAL: SIGNER_TRANSPORT_KEM_OVERLAP_KEY must be a 4800-character hex string (ML-KEM-768 secret key)'
+    }
+  }
+
   const signerUid = env.SIGNER_UID
   if (signerUid) {
     try {

@@ -23,7 +23,7 @@ import { log } from '../../lib/logger.js'
 import { checkpointService } from '../../services/CheckpointService.js'
 
 /** Timeout for relay queries */
-const RELAY_QUERY_TIMEOUT_MS = 5000
+export const RELAY_QUERY_TIMEOUT_MS = 5000
 
 // ── Endorsement Construction ─────────────────────────────────────────────────
 
@@ -113,7 +113,8 @@ export async function publishGenesisEntry(
   platformServiceEntryId: string,
   createdAt?: number,
   ndkInstance?: NDK,
-  encPubkey?: string
+  encPubkey?: string,
+  legacyEncPubkey?: string
 ): Promise<string> {
   if (!relayUrls || relayUrls.length === 0) {
     throw new Error('No relay URLs configured — cannot publish Kind 297')
@@ -169,8 +170,38 @@ export async function publishGenesisEntry(
     if (!encPubkey) {
       throw new Error('encPubkey is required for ML-DSA-44 genesis entry')
     }
-    const encBytes = hexToBytes(encPubkey)
-    const encKey = `secp256k1-nip44:${base64.encode(encBytes)}`
+    let encKey: string
+    if (encPubkey.startsWith('ml-kem-768:') || encPubkey.startsWith('secp256k1-nip44:')) {
+      encKey = encPubkey
+    } else {
+      const encBytes = hexToBytes(encPubkey)
+      if (encBytes.length === 1184) {
+        encKey = `ml-kem-768:${base64.encode(encBytes)}`
+      } else if (encBytes.length === 32) {
+        encKey = `secp256k1-nip44:${base64.encode(encBytes)}`
+      } else {
+        throw new Error(
+          `Invalid encPubkey byte length: expected 1184 (ml-kem-768) or 32 (secp256k1-nip44), got ${encBytes.length}`
+        )
+      }
+    }
+
+    let legacyEncKey: string | undefined
+    if (legacyEncPubkey) {
+      if (legacyEncPubkey.startsWith('secp256k1-nip44:')) {
+        legacyEncKey = legacyEncPubkey
+      } else {
+        const legacyBytes = hexToBytes(legacyEncPubkey)
+        if (legacyBytes.length === 32) {
+          legacyEncKey = `secp256k1-nip44:${base64.encode(legacyBytes)}`
+        } else {
+          throw new Error(
+            `Invalid legacyEncPubkey byte length: expected 32 (secp256k1-nip44), got ${legacyBytes.length}`
+          )
+        }
+      }
+    }
+
     const uid = identityIdFromPublicKey(pubkey)
     const validFrom = createdAt || Math.floor(Date.now() / 1000)
 
@@ -192,7 +223,8 @@ export async function publishGenesisEntry(
       version: 1,
       keys: {
         sign: signKey,
-        enc: encKey
+        enc: encKey,
+        ...(legacyEncKey ? { legacy_enc: legacyEncKey } : {})
       },
       valid: {
         from: validFrom
@@ -487,6 +519,136 @@ export async function publishRevokeEntry(
 
     checkpointService.broadcast('signer.kind297.published', {
       variant: 'revoke',
+      entryId: event.id,
+      uid: uid.substring(0, 16),
+      skipped: false
+    })
+
+    return event.id
+  } finally {
+    if (!ndkInstance && ndk.pool) {
+      ndk.pool.relays.forEach((relay) => relay.disconnect())
+    }
+  }
+}
+
+// ── Rotate (Enc-Only) Publication ─────────────────────────────────────────────
+
+/**
+ * Publishes an enc-only Kind 297 rotate event updating an identity's encryption key.
+ * Signed by the user's identity key and endorsed by the daemon key.
+ * No countersign because KEM keys cannot sign.
+ */
+export async function publishRotateEncEntry(
+  userSigner: NDKSigner,
+  pubkey: string,
+  newKemPubkey: string,
+  relayUrls: string[],
+  platformServiceEntryId: string,
+  parentEntryId?: string,
+  createdAt?: number,
+  ndkInstance?: NDK
+): Promise<string> {
+  if (!relayUrls || relayUrls.length === 0) {
+    throw new Error('No relay URLs configured — cannot publish Kind 297')
+  }
+  const daemonKey = process.env.SIGNER_DAEMON_KEY
+  if (!daemonKey) {
+    throw new Error('SIGNER_DAEMON_KEY not set — cannot endorse or authenticate with relay')
+  }
+
+  let ndk: NDK
+  if (ndkInstance) {
+    ndk = ndkInstance
+  } else {
+    const authSigner = new NDKMlDsaSigner(daemonKey)
+    ndk = new NDK({
+      explicitRelayUrls: relayUrls,
+      signer: authSigner,
+      enableOutboxModel: false,
+      autoDeviceDiscovery: false,
+      autoFetchUserMutelist: false,
+      cacheAdapter: undefined
+    })
+    ndk.relayAuthDefaultPolicy = NDKRelayAuthPolicies.signIn({ ndk })
+    await ndk.connect(5000)
+  }
+
+  try {
+    const uid = identityIdFromPublicKey(pubkey)
+    let kid = parentEntryId
+    if (!kid) {
+      const currentEntry = await queryCurrentIdentityEntry(ndk, uid)
+      if (!currentEntry) {
+        throw new Error(`Cannot issue rotate entry: no active identity key entry found for ${uid}`)
+      }
+      kid = currentEntry.id
+    }
+
+    let encKeyStr: string
+    if (newKemPubkey.startsWith('ml-kem-768:')) {
+      encKeyStr = newKemPubkey
+    } else {
+      const encBytes = hexToBytes(newKemPubkey)
+      if (encBytes.length !== 1184) {
+        throw new Error(`Invalid newKemPubkey byte length: expected 1184 (ml-kem-768), got ${encBytes.length}`)
+      }
+      encKeyStr = `ml-kem-768:${base64.encode(encBytes)}`
+    }
+
+    const nowSec = createdAt || Math.floor(Date.now() / 1000)
+
+    const contentWithoutPlatform = {
+      version: 1,
+      keys: {
+        enc: encKeyStr
+      },
+      valid: {
+        from: nowSec
+      }
+    }
+
+    const endorsement = buildEndorsement(
+      contentWithoutPlatform,
+      uid,
+      'rotate',
+      daemonKey,
+      platformServiceEntryId
+    )
+
+    const fullContent = {
+      ...contentWithoutPlatform,
+      platform: endorsement
+    }
+
+    const builder = Kind297KeyChain.build({
+      variant: 'rotate',
+      kid,
+      created_at: nowSec,
+      content: fullContent
+    })
+
+    const event = await builder.toSignedNDKEvent({
+      ndk,
+      signer: userSigner,
+      uid
+    })
+
+    let published: Set<any>
+    if (ndk.pool) {
+      const relaySet = NDKRelaySet.fromRelayUrls(relayUrls, ndk)
+      published = await event.publish(relaySet, DEFAULT_PUBLISH_TIMEOUT_MS)
+    } else {
+      published = await (ndk as any).publish(event)
+    }
+    if (published.size === 0) {
+      throw new Error(`Not enough relays received the Kind 297 rotate event (0 published, ${relayUrls.length} required)`)
+    }
+
+    log.admin(`Kind 297 rotate (enc-only) published for ${uid.substring(0, 16)}... (id: ${event.id})`)
+
+    checkpointService.broadcast('signer.kind297.published', {
+      variant: 'rotate',
       entryId: event.id,
       uid: uid.substring(0, 16),
       skipped: false

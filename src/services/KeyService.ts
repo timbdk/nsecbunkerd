@@ -139,9 +139,22 @@ export async function retrieveKey(keyName: string): Promise<string | null> {
   return decryptPrivateKey(key.encryptedKey, key.iv, key.authTag, keyName)
 }
 
+export interface KeyFamilyMember {
+  keyName: string
+  pubkey: string
+  privateKeyHex: string
+  algorithm: string
+  status?: string
+  retiredAt?: Date | null
+}
+
 export interface KeyFamily {
-  identity: { keyName: string; pubkey: string; privateKeyHex: string; algorithm: string }
-  enc?: { keyName: string; pubkey: string; privateKeyHex: string; algorithm: string }
+  identity: KeyFamilyMember
+  enc?: KeyFamilyMember
+  kem?: {
+    active?: KeyFamilyMember
+    retired: KeyFamilyMember[]
+  }
 }
 
 /**
@@ -162,7 +175,7 @@ export async function resolveKeyFamily(identityKeyName: string): Promise<KeyFami
     where: { parentKeyName: identityKeyName, role: 'enc', status: 'ACTIVE' }
   })
 
-  let enc: KeyFamily['enc'] | undefined
+  let enc: KeyFamilyMember | undefined
   if (encRow) {
     const encPrivateKeyHex = await retrieveKey(encRow.keyName)
     if (encPrivateKeyHex) {
@@ -175,6 +188,49 @@ export async function resolveKeyFamily(identityKeyName: string): Promise<KeyFami
     }
   }
 
+  const kemRows = await prisma.key.findMany({
+    where: {
+      parentKeyName: identityKeyName,
+      role: 'kem',
+      status: { in: ['ACTIVE', 'RETIRED'] }
+    },
+    orderBy: { retiredAt: 'desc' }
+  })
+
+  let kem: KeyFamily['kem'] | undefined
+  if (kemRows.length > 0) {
+    let activeKem: KeyFamilyMember | undefined
+    const retiredKem: KeyFamilyMember[] = []
+
+    for (const row of kemRows) {
+      const pkHex = await retrieveKey(row.keyName)
+      if (pkHex) {
+        const member: KeyFamilyMember = {
+          keyName: row.keyName,
+          pubkey: row.pubkey,
+          privateKeyHex: pkHex,
+          algorithm: row.algorithm,
+          status: row.status,
+          retiredAt: row.retiredAt
+        }
+        if (row.status === 'ACTIVE') {
+          if (!activeKem) {
+            activeKem = member
+          } else {
+            logError('keys', `Duplicate ACTIVE KEM key found for ${identityKeyName}: ${row.keyName}`)
+          }
+        } else if (row.status === 'RETIRED') {
+          retiredKem.push(member)
+        }
+      }
+    }
+
+    kem = {
+      active: activeKem,
+      retired: retiredKem
+    }
+  }
+
   return {
     identity: {
       keyName: identityRow.keyName,
@@ -182,7 +238,8 @@ export async function resolveKeyFamily(identityKeyName: string): Promise<KeyFami
       privateKeyHex: identityPrivateKeyHex,
       algorithm: identityRow.algorithm
     },
-    enc
+    enc,
+    kem
   }
 }
 

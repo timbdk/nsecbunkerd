@@ -54,7 +54,7 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
         if (url.pathname === '/testing/register' && req.method === 'POST') {
           try {
             const body = await req.json() as any
-            const { keyName, clientPubkey, clientEncPubkey, createdAt, identityKey, encKey } = body
+            const { keyName, clientPubkey, clientEncPubkey, createdAt, identityKey, encKey, kemKey } = body
 
             if (!keyName || !identityKey) {
               return Response.json({ error: 'keyName and identityKey are required' }, { status: 400, headers })
@@ -97,11 +97,37 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
               }
             }
 
+            let kemSecretHex: string | undefined
+            let kemPubkeyHex: string | undefined
+            let shouldStoreKem = false
+
+            if (kemKey) {
+              kemSecretHex = kemKey.secretKey
+              kemPubkeyHex = kemKey.publicKey
+              shouldStoreKem = true
+            } else {
+              const existingKem = await prisma.key.findFirst({
+                where: { parentKeyName: keyName, role: 'kem', status: 'ACTIVE' }
+              })
+              if (existingKem) {
+                kemPubkeyHex = existingKem.pubkey
+              } else {
+                const generatedKem = keygen('ml-kem-768')
+                kemSecretHex = Buffer.from(generatedKem.secretKey).toString('hex')
+                kemPubkeyHex = Buffer.from(generatedKem.publicKey).toString('hex')
+                shouldStoreKem = true
+              }
+            }
+
             // Store identity row
             await storeKey(keyName, identitySecretHex, identityPubkeyHex, identityAlg, 'identity')
             // Store enc row if newly generated or explicitly provided
             if (shouldStoreEnc && encSecretHex && encPubkeyHex) {
               await storeKey(`${keyName}#enc`, encSecretHex, encPubkeyHex, 'secp256k1-nip44', 'enc', keyName)
+            }
+            // Store kem row if newly generated or explicitly provided
+            if (shouldStoreKem && kemSecretHex && kemPubkeyHex) {
+              await storeKey(`${keyName}#kem`, kemSecretHex, kemPubkeyHex, 'ml-kem-768', 'kem', keyName)
             }
             checkpointService.broadcast('signer.testing.key_stored', { keyName })
 
@@ -116,6 +142,7 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
                   { method: 'sign_event', allowScope: { kind: null } },
                   { method: 'nip44_encrypt' },
                   { method: 'nip44_decrypt' },
+                  { method: 'kem_decrypt' },
                   { method: 'switch_relays' },
                   { method: 'get_public_key' },
                   { method: 'ping' }
@@ -184,6 +211,7 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
               daemonServiceEntryId,
               createdAt,
               daemon.ndk,
+              isMlDsa ? kemPubkeyHex : undefined,
               isMlDsa ? encPubkeyHex : undefined
             )
 
@@ -246,6 +274,7 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
                 { method: 'sign_event', allowScope: { kind: null } },
                 { method: 'nip44_encrypt' },
                 { method: 'nip44_decrypt' },
+                { method: 'kem_decrypt' },
                 { method: 'switch_relays' },
                 { method: 'get_public_key' },
                 { method: 'ping' }
@@ -374,6 +403,143 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
             }, { status: 200, headers })
           } catch (e: any) {
             logError('http', `Testing revoke-delegate error:`, e)
+            return Response.json({ error: e.message }, { status: 500, headers })
+          }
+        }
+
+        // POST /testing/rotate-transport-kem
+        if (url.pathname === '/testing/rotate-transport-kem' && req.method === 'POST') {
+          try {
+            if (!daemon.transportKemManager) {
+              return Response.json({ error: 'Transport KEM manager is not initialized' }, { status: 503, headers })
+            }
+            const body = (await req.json().catch(() => ({}))) as any
+            const { secretKey, windowSeconds } = body
+            let newKeypair
+            if (secretKey) {
+              const { publicKeyFromSecret } = await import('verity-event-data-module')
+              const { bytesToHex } = await import('@noble/hashes/utils.js')
+              newKeypair = {
+                secretKeyHex: secretKey,
+                publicKeyHex: bytesToHex(publicKeyFromSecret('ml-kem-768', secretKey))
+              }
+            }
+            daemon.transportKemManager.rotate(newKeypair, windowSeconds ?? 86400)
+            const daemonKeyHex = process.env.SIGNER_DAEMON_KEY!
+            const daemonSigner = new NDKMlDsaSigner(daemonKeyHex)
+            const eventId = await daemon.transportKemManager.publishAnnouncement(
+              daemon.ndk,
+              daemonSigner,
+              daemonKeyHex,
+              daemon.config.nostr.relays
+            )
+            checkpointService.broadcast('signer.testing.transport_kem_rotated', {
+              activePubkey: daemon.transportKemManager.activeKey.publicKeyHex,
+              overlapPubkey: daemon.transportKemManager.overlapKey?.publicKeyHex ?? null
+            })
+            return Response.json({
+              success: true,
+              activePubkey: daemon.transportKemManager.activeKey.publicKeyHex,
+              overlapPubkey: daemon.transportKemManager.overlapKey?.publicKeyHex ?? null,
+              overlapExpiresAt: daemon.transportKemManager.overlapKey?.expiresAt ?? null,
+              eventId
+            }, { status: 200, headers })
+          } catch (e: any) {
+            logError('http', `Rotate transport KEM error: ${e.message}`, e)
+            return Response.json({ error: e.message }, { status: 500, headers })
+          }
+        }
+
+        // POST /testing/rotate-user-kem
+        if (url.pathname === '/testing/rotate-user-kem' && req.method === 'POST') {
+          try {
+            const body = (await req.json()) as any
+            const { keyName, newSecretKeyHex, newPublicKeyHex } = body
+            if (!keyName) return Response.json({ error: 'keyName is required' }, { status: 400, headers })
+
+            const identityKey = await prisma.key.findFirst({
+              where: { keyName, role: 'identity', status: 'ACTIVE' }
+            })
+            if (!identityKey) return Response.json({ error: `Identity key not found: ${keyName}` }, { status: 404, headers })
+
+            const existingActiveKem = await prisma.key.findFirst({
+              where: { parentKeyName: keyName, role: 'kem', status: 'ACTIVE' }
+            })
+            if (!existingActiveKem) {
+              return Response.json({ error: `Active KEM key not found for ${keyName}` }, { status: 404, headers })
+            }
+
+            const { storeKey, retrieveKey } = await import('../../services/KeyService.js')
+
+            const retiredAt = new Date()
+            await prisma.key.update({
+              where: { keyName: existingActiveKem.keyName },
+              data: {
+                status: 'RETIRED',
+                statusAt: retiredAt,
+                retiredAt
+              }
+            })
+
+            let freshSecret = newSecretKeyHex
+            let freshPubkey = newPublicKeyHex
+            if (!freshSecret || !freshPubkey) {
+              const { keygen } = await import('verity-event-data-module')
+              const { bytesToHex } = await import('@noble/hashes/utils.js')
+              const generated = keygen('ml-kem-768')
+              freshSecret = bytesToHex(generated.secretKey)
+              freshPubkey = bytesToHex(generated.publicKey)
+            }
+
+            const freshKeyName = `${keyName}#kem-${Date.now()}`
+            await storeKey(freshKeyName, freshSecret, freshPubkey, 'ml-kem-768', 'kem', keyName)
+
+            const { resolveKeyFamily } = await import('../../services/KeyService.js')
+            const updatedFamily = await resolveKeyFamily(keyName)
+            if (updatedFamily?.kem) {
+              daemon.updateUserKemFamily?.(keyName, updatedFamily.kem)
+            }
+
+            const { publishRotateEncEntry } = await import('../lib/keychain-event.js')
+            const identitySecretHex = await retrieveKey(keyName)
+            if (!identitySecretHex) throw new Error(`Private key not found for identity ${keyName}`)
+            const userSigner = identityKey.algorithm === 'ml-dsa-44'
+              ? new NDKMlDsaSigner(identitySecretHex)
+              : new NDKPrivateKeySigner(identitySecretHex)
+
+            const daemonServiceEntryId = daemon.platformServiceEntryId
+            if (!daemonServiceEntryId) {
+              throw new Error('Signer daemon has no verified platformServiceEntryId')
+            }
+
+            const rotateEntryId = await publishRotateEncEntry(
+              userSigner,
+              identityKey.pubkey,
+              freshPubkey,
+              daemon.config.nostr.relays,
+              daemonServiceEntryId,
+              undefined,
+              undefined,
+              daemon.ndk
+            )
+
+            checkpointService.broadcast('signer.testing.user_kem_rotated', {
+              keyName,
+              oldPubkey: existingActiveKem.pubkey,
+              newPubkey: freshPubkey,
+              rotateEntryId
+            })
+
+            return Response.json({
+              success: true,
+              keyName,
+              oldPubkey: existingActiveKem.pubkey,
+              newPubkey: freshPubkey,
+              newPublicKey: freshPubkey,
+              rotateEntryId
+            }, { status: 200, headers })
+          } catch (e: any) {
+            logError('http', `Rotate user KEM error: ${e.message}`, e)
             return Response.json({ error: e.message }, { status: 500, headers })
           }
         }
