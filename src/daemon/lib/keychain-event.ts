@@ -82,6 +82,16 @@ export function buildEndorsement(
 
 // ── Chain Query Helpers ──────────────────────────────────────────────────────
 
+export function withRelayTimeout<T>(promise: Promise<T>, fallback: T, ms = RELAY_QUERY_TIMEOUT_MS): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  const timeoutPromise = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), ms)
+  })
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
+}
+
 export async function queryExistingGenesisEntry(
   ndk: NDK,
   uid: string
@@ -92,10 +102,7 @@ export async function queryExistingGenesisEntry(
     authors: [uid],
     '#v': ['genesis']
   })
-  const timeoutPromise = new Promise<null>((resolve) =>
-    setTimeout(() => resolve(null), RELAY_QUERY_TIMEOUT_MS)
-  )
-  return await Promise.race([queryPromise, timeoutPromise])
+  return await withRelayTimeout(queryPromise, null)
 }
 
 export async function queryCurrentIdentityEntry(
@@ -107,10 +114,7 @@ export async function queryCurrentIdentityEntry(
     kinds: [297 as any],
     authors: [uid]
   })
-  const timeoutPromise = new Promise<Set<NDKEvent>>((resolve) =>
-    setTimeout(() => resolve(new Set()), RELAY_QUERY_TIMEOUT_MS)
-  )
-  const eventsSet = await Promise.race([eventsPromise, timeoutPromise])
+  const eventsSet = await withRelayTimeout(eventsPromise, new Set<NDKEvent>())
 
   const events: any[] = []
   for (const ev of eventsSet) {

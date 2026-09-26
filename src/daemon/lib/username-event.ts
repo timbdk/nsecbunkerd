@@ -2,6 +2,7 @@ import NDK, { NDKMlDsaSigner, NDKPrivateKeySigner, NDKRelayAuthPolicies, NDKRela
 import { Kind415UsernameRegistration, identityIdFromPublicKey } from 'verity-event-data-module'
 import { log } from '../../lib/logger.js'
 import { checkpointService } from '../../services/CheckpointService.js'
+import { withRelayTimeout } from './keychain-event.js'
 
 /**
  * Publish a Kind 415 username registration event (idempotent).
@@ -160,9 +161,6 @@ async function queryExistingUsernameEvent(
   }
 
   const queryPromise = ndk.fetchEvent(filter as any)
-  const timeoutPromise = new Promise<null>((resolve) =>
-    setTimeout(() => resolve(null), 5000)
-  )
-  const event = await Promise.race([queryPromise, timeoutPromise])
+  const event = await withRelayTimeout(queryPromise, null)
   return !!event
 }
