@@ -23,7 +23,41 @@ import { log } from '../../lib/logger.js'
 import { checkpointService } from '../../services/CheckpointService.js'
 
 /** Timeout for relay queries */
-export const RELAY_QUERY_TIMEOUT_MS = 5000
+export const RELAY_QUERY_TIMEOUT_MS = 20000
+
+/**
+ * Ensures the first relay in the NDK pool is connected and NIP-42 authenticated.
+ * Re-connects if disconnected, then polls for authenticated status.
+ */
+async function ensureRelayConnectedAndAuthenticated(ndk: NDK): Promise<void> {
+  const relays = Array.from(ndk.pool?.relays?.values() ?? []) as any[]
+  if (relays.length === 0) return
+
+  await Promise.all(
+    relays.map(async (relay) => {
+      if (relay.status < NDKRelayStatus.CONNECTED) {
+        await ndk.connect(5000).catch(() => {})
+      }
+      if (relay.status >= NDKRelayStatus.AUTHENTICATED) {
+        return
+      }
+
+      await new Promise<void>((resolve) => {
+        let timer: NodeJS.Timeout
+        const onAuthed = () => {
+          clearTimeout(timer)
+          resolve()
+        }
+        timer = setTimeout(() => {
+          relay.off('authed', onAuthed)
+          log.admin(`Warning: relay auth timeout (status: ${relay.status})`)
+          resolve()
+        }, 5000)
+        relay.once('authed', onAuthed)
+      })
+    })
+  )
+}
 
 // ── Endorsement Construction ─────────────────────────────────────────────────
 
@@ -52,6 +86,7 @@ export async function queryExistingGenesisEntry(
   ndk: NDK,
   uid: string
 ): Promise<NDKEvent | null> {
+  await ensureRelayConnectedAndAuthenticated(ndk)
   const queryPromise = ndk.fetchEvent({
     kinds: [297 as any],
     authors: [uid],
@@ -60,13 +95,14 @@ export async function queryExistingGenesisEntry(
   const timeoutPromise = new Promise<null>((resolve) =>
     setTimeout(() => resolve(null), RELAY_QUERY_TIMEOUT_MS)
   )
-  return Promise.race([queryPromise, timeoutPromise])
+  return await Promise.race([queryPromise, timeoutPromise])
 }
 
 export async function queryCurrentIdentityEntry(
   ndk: NDK,
   uid: string
 ): Promise<ChainEntry | null> {
+  await ensureRelayConnectedAndAuthenticated(ndk)
   const eventsPromise = ndk.fetchEvents({
     kinds: [297 as any],
     authors: [uid]
@@ -144,20 +180,7 @@ export async function publishGenesisEntry(
     await ndk.connect(5000)
   }
 
-  const relay = Array.from(ndk.pool.relays.values())[0] as any
-  if (relay) {
-    if (relay.status < NDKRelayStatus.CONNECTED) {
-      await ndk.connect(5000).catch(() => {})
-    }
-    let authAttempts = 0
-    while (relay.status < NDKRelayStatus.AUTHENTICATED && authAttempts < 50) {
-      await new Promise((resolve) => setTimeout(resolve, 100))
-      authAttempts++
-    }
-    if (relay.status < NDKRelayStatus.AUTHENTICATED) {
-      log.admin(`Warning: relay auth not confirmed (status: ${relay.status}) for Kind 297 publish`)
-    }
-  }
+  await ensureRelayConnectedAndAuthenticated(ndk)
 
   try {
     const pubBytes = hexToBytes(pubkey)
@@ -337,6 +360,8 @@ export async function publishDelegateEntry(
     await ndk.connect(5000)
   }
 
+  await ensureRelayConnectedAndAuthenticated(ndk)
+
   try {
     const uid = identityIdFromPublicKey(pubkey)
     let kid = parentEntryId
@@ -463,6 +488,8 @@ export async function publishRevokeEntry(
     await ndk.connect(5000)
   }
 
+  await ensureRelayConnectedAndAuthenticated(ndk)
+
   try {
     const uid = identityIdFromPublicKey(pubkey)
     let kid = parentEntryId
@@ -573,6 +600,8 @@ export async function publishRotateEncEntry(
     ndk.relayAuthDefaultPolicy = NDKRelayAuthPolicies.signIn({ ndk })
     await ndk.connect(5000)
   }
+
+  await ensureRelayConnectedAndAuthenticated(ndk)
 
   try {
     const uid = identityIdFromPublicKey(pubkey)

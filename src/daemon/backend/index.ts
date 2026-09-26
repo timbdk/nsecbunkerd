@@ -214,7 +214,8 @@ export class VerityConnectStrategy implements IEventHandlingStrategy {
   constructor(private backend: Backend, private family: KeyFamily) {}
 
   async handle(backend: NDKNip46Backend, id: string, remotePubkey: string, params: string[]): Promise<string | undefined> {
-    const [_, token, encPubkey] = params
+    const token = params[1]
+    const rawKemCandidate = params[3] ?? params[2]
     const debug = backend.debug.extend('connect')
 
     debug(`connection request from ${remotePubkey}`)
@@ -236,27 +237,23 @@ export class VerityConnectStrategy implements IEventHandlingStrategy {
       return undefined
     }
 
-    let clientEncHex: string | undefined
-    if (encPubkey) {
+    let clientKemHex: string | undefined
+    if (rawKemCandidate) {
       try {
-        if (/^[a-f0-9]{64}$/i.test(encPubkey)) {
-          clientEncHex = encPubkey.toLowerCase()
+        if (/^[a-f0-9]{2368}$/i.test(rawKemCandidate)) {
+          clientKemHex = rawKemCandidate.toLowerCase()
         } else {
-          clientEncHex = bytesToHex(base64.decode(encPubkey))
+          const decoded = base64.decode(rawKemCandidate)
+          if (decoded.length === 1184) {
+            clientKemHex = bytesToHex(decoded)
+          }
         }
       } catch {
         // ignore
       }
     }
-    if (!clientEncHex && backend.rpc?.peerEcdhPubkeys?.has(remotePubkey)) {
-      clientEncHex = backend.rpc.peerEcdhPubkeys.get(remotePubkey)
-    }
 
-    if (clientEncHex && !/^[0-9a-f]{64}$/i.test(clientEncHex)) {
-      clientEncHex = undefined
-    }
-
-    if (clientEncHex) {
+    if (clientKemHex) {
       try {
         const normalizedRemote = remotePubkey.length === 2624 ? identityIdFromPublicKey(remotePubkey) : remotePubkey
         await prisma.session.updateMany({
@@ -265,14 +262,20 @@ export class VerityConnectStrategy implements IEventHandlingStrategy {
             clientPubkey: { in: [remotePubkey, normalizedRemote] }
           },
           data: {
-            clientEncPubkey: clientEncHex
+            clientKemPubkey: clientKemHex
           }
         })
-        debug(`saved clientEncPubkey ${clientEncHex} for ${remotePubkey}`)
+        debug(`saved clientKemPubkey ${clientKemHex} for ${remotePubkey}`)
       } catch (e) {
-        log.acl('Failed to save clientEncPubkey on session', e)
+        log.acl('Failed to save clientKemPubkey on session', e)
       }
     }
+
+    const sessionUid = remotePubkey.length === 2624 ? identityIdFromPublicKey(remotePubkey) : remotePubkey
+    checkpointService.broadcast('signer.rpc.connect.completed', {
+      keyName: this.family.identity.keyName.substring(0, 16),
+      sessionUid: sessionUid.substring(0, 16)
+    })
 
     debug(`connection request from ${remotePubkey} allowed`)
     return 'ack'
@@ -287,9 +290,59 @@ export class Backend extends NDKNip46Backend {
   constructor(ndk: NDK, family: KeyFamily, cb: Nip46PermitCallback, config: IConfig) {
     const identitySigner = new NDKMlDsaSigner(family.identity.privateKeyHex)
     const encSigner = family.enc ? new NDKPrivateKeySigner(family.enc.privateKeyHex) : undefined
-    const credential = encSigner ? new NDKTransportCredential(identitySigner, encSigner, ndk) : identitySigner
+    const credential = new NDKTransportCredential(
+      identitySigner,
+      {
+        ecdh: encSigner,
+        kem: family.kem?.active?.privateKeyHex
+      },
+      ndk
+    )
 
-    super(ndk, credential, cb, config.nostr.relays)
+    credential.kemDecaps = (payload: string): string => {
+      const candidateKeys: string[] = []
+      const kemFamily = this?.family?.kem ?? family.kem
+      if (kemFamily?.active?.privateKeyHex) {
+        candidateKeys.push(kemFamily.active.privateKeyHex)
+      }
+      if (kemFamily?.retired && kemFamily.retired.length > 0) {
+        for (const member of kemFamily.retired) {
+          if (member.privateKeyHex) {
+            candidateKeys.push(member.privateKeyHex)
+          }
+        }
+      }
+      for (const secretKeyHex of candidateKeys) {
+        try {
+          return kemDecrypt(secretKeyHex, payload)
+        } catch {
+          // Try next candidate key
+        }
+      }
+      throw new Error('AEAD decryption failed: no matching active or retired KEM key')
+    }
+
+    const resolvePeerKemKey = async (clientPubkey: string) => {
+      const normalizedPubkey = clientPubkey.length === 2624 ? identityIdFromPublicKey(clientPubkey) : clientPubkey
+      const session = await prisma.session.findFirst({
+        where: {
+          keyName: family.identity.keyName,
+          clientPubkey: { in: [clientPubkey, normalizedPubkey] }
+        },
+        select: { clientKemPubkey: true }
+      })
+      const key = session?.clientKemPubkey
+      if (!key || key.length !== 2368) {
+        return undefined
+      }
+      return key
+    }
+
+    super(ndk, credential, cb, config.nostr.relays, {
+      envelopeMode: 'kem',
+      resolvePeerKemKey,
+      responseCapable: true
+    })
     this.identitySigner = identitySigner
     this.encSigner = encSigner
     this.family = family
@@ -299,18 +352,6 @@ export class Backend extends NDKNip46Backend {
     this.setStrategy('nip44_encrypt', new VerityNip44EncryptStrategy(this, family))
     this.setStrategy('nip44_decrypt', new VerityNip44DecryptStrategy(this, family))
     this.setStrategy('kem_decrypt', new VerityKemDecryptStrategy(this, family))
-
-    this.rpc.resolvePeerEcdhPubkey = async (clientPubkey: string) => {
-      const normalizedPubkey = clientPubkey.length === 2624 ? identityIdFromPublicKey(clientPubkey) : clientPubkey
-      const session = await prisma.session.findFirst({
-        where: {
-          keyName: family.identity.keyName,
-          clientPubkey: { in: [clientPubkey, normalizedPubkey] }
-        },
-        select: { clientEncPubkey: true }
-      })
-      return session?.clientEncPubkey ?? undefined
-    }
   }
 
   updateKemFamily(kem: KeyFamily['kem']) {

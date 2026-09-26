@@ -41,7 +41,7 @@ model Session {
   id              Int                @id @default(autoincrement())
   keyName         String
   clientPubkey    String                              // Authorized device/browser pubkey
-  clientEncPubkey String?                             // Classical ECDH public key (hex) for NIP-44 transport envelope
+  clientKemPubkey String?                             // ML-KEM-768 public key (hex) for transport envelope
   createdAt       DateTime           @default(now())
   updatedAt       DateTime           @updatedAt
   revokedAt       DateTime?
