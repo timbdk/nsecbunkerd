@@ -33,13 +33,22 @@ export class TransportKemManager {
   public activeKey: TransportKeypair
   public overlapKey: OverlapTransportKeypair | null = null
   public clock: () => number
+  public defaultWindowSeconds: number
 
   constructor(
     initialKeyHex: string,
     initialOverlapKeyHex?: string,
+    defaultWindowSecondsOrClock?: number | (() => number),
     clock: () => number = () => Date.now()
   ) {
-    this.clock = clock
+    if (typeof defaultWindowSecondsOrClock === 'function') {
+      this.clock = defaultWindowSecondsOrClock
+      this.defaultWindowSeconds = 86400
+    } else {
+      this.defaultWindowSeconds = defaultWindowSecondsOrClock ?? 86400
+      this.clock = clock
+    }
+
     const activePubBytes = publicKeyFromSecret('ml-kem-768', initialKeyHex)
     this.activeKey = {
       secretKeyHex: initialKeyHex,
@@ -48,10 +57,11 @@ export class TransportKemManager {
 
     if (initialOverlapKeyHex) {
       const overlapPubBytes = publicKeyFromSecret('ml-kem-768', initialOverlapKeyHex)
+      const now = this.clock()
       this.overlapKey = {
         secretKeyHex: initialOverlapKeyHex,
         publicKeyHex: bytesToHex(overlapPubBytes),
-        expiresAt: this.clock() + 86400 * 1000
+        expiresAt: now + this.defaultWindowSeconds * 1000
       }
     }
   }
@@ -62,7 +72,7 @@ export class TransportKemManager {
 
   rotate(
     newKeypair?: TransportKeypair,
-    windowSeconds: number = 86400
+    windowSeconds: number = this.defaultWindowSeconds
   ): TransportKeypair {
     const now = this.clock()
     this.overlapKey = {
@@ -101,29 +111,6 @@ export class TransportKemManager {
       }
     }
     throw new Error('AEAD decryption failed: no matching active or unexpired overlap transport KEM key')
-  }
-
-  async buildStaleKeyError(
-    senderUid: string,
-    requestId?: string
-  ): Promise<{ error: string; code: string; id?: string } | null> {
-    const session = await prisma.session.findFirst({
-      where: {
-        clientPubkey: senderUid,
-        revokedAt: null
-      }
-    })
-
-    if (!session) {
-      log.daemon(`Undecapsulatable request from unknown transport uid ${senderUid.substring(0, 16)}... dropped silently`)
-      return null
-    }
-
-    return {
-      error: 'KEM key is stale; please refresh transport announcement',
-      code: 'KEM_STALE_KEY',
-      id: requestId
-    }
   }
 
   async publishAnnouncement(

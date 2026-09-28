@@ -9,7 +9,7 @@ import NDK, {
   Nip46PermitCallbackParams
 } from '@nostr-dev-kit/ndk'
 import { log, auditSigningRequest, logStartup, logError } from '../lib/logger.js'
-import { Backend } from './backend/index.js'
+import { DaemonBackend } from './backend/index.js'
 import { IMethod, checkIfPubkeyAllowed } from './lib/acl/index.js'
 import AdminInterface from './admin/index.js'
 import { IConfig, validateDaemonEnvironment } from '../config/index.js'
@@ -117,7 +117,8 @@ export class Daemon {
   public platformId: string = ''
   public platformServiceEntryId: string | null = null
   public transportKemManager!: TransportKemManager
-  public backends: Map<string, Backend> = new Map()
+  public keyRegistry: Map<string, KeyFamily> = new Map()
+  public daemonBackend?: DaemonBackend
 
   constructor(config: DaemonConfig) {
     this.config = config
@@ -395,6 +396,7 @@ export class Daemon {
       this.httpServer = startHttpServer(this, this.config.authPort, this.config.authHost)
     }
     await this.startKeys()
+    await this.startDaemonBackend()
     await this.adminInterface?.ready
 
     this.isReady = true
@@ -420,47 +422,78 @@ export class Daemon {
   }
 
   /**
-   * Start a key family backend
+   * Start consolidated DaemonBackend on #p: [H(daemon key)]
+   */
+  async startDaemonBackend() {
+    const daemonKey = process.env.SIGNER_DAEMON_KEY!
+    const daemonSigner = new NDKMlDsaSigner(daemonKey)
+    const daemonEcdhSigner = process.env.SIGNER_DAEMON_ECDH_KEY ? new NDKPrivateKeySigner(process.env.SIGNER_DAEMON_ECDH_KEY) : undefined
+    const daemonCredential = new NDKTransportCredential(
+      daemonSigner,
+      {
+        ecdh: daemonEcdhSigner,
+        kem: this.transportKemManager.activeKey.secretKeyHex
+      },
+      this.ndk
+    )
+
+    // Wire live overlap window decapsulation via transportKemManager
+    daemonCredential.kemDecaps = (payload: string): string => {
+      return this.transportKemManager.decapsulate(payload)
+    }
+
+    const daemonPermitCallback = async (params: { id: string; pubkey: string; keyName: string; method: IMethod; params?: any }) => {
+      const cb = signingAuthorizationCallback(params.keyName)
+      return cb(params as any)
+    }
+
+    this.daemonBackend = new DaemonBackend(
+      this.ndk,
+      daemonCredential,
+      this.keyRegistry,
+      this.transportKemManager,
+      daemonPermitCallback,
+      this.config
+    )
+
+    await this.daemonBackend.start()
+    logStartup('✅ Consolidated daemon backend started on #p: [H(daemon key)]')
+  }
+
+  /**
+   * Start / register a key family in the daemon key registry
    */
   async startFamily(family: KeyFamily) {
-    const cb = signingAuthorizationCallback(family.identity.keyName)
-    const backend = new Backend(this.ndk, family, cb, this.config)
-    this.backends.set(family.identity.keyName, backend)
-    await backend.start()
+    this.keyRegistry.set(family.identity.keyName, family)
+    log.keys(`Registered key family in daemon registry: ${family.identity.keyName}`)
   }
 
   updateUserKemFamily(keyName: string, kem: KeyFamily['kem']) {
-    const backend = this.backends.get(keyName)
-    if (backend) {
-      backend.updateKemFamily(kem)
+    const family = this.keyRegistry.get(keyName)
+    if (family) {
+      family.kem = kem
+      log.keys(`Updated KEM family in daemon registry: ${keyName}`)
     }
   }
 
   /**
-   * Load and start a key
+   * Load and register a key in the daemon key registry
    */
   async loadKey(name: string, rawHex: string, algorithm: string = 'ml-dsa-44') {
     const family = await resolveKeyFamily(name)
     if (family) {
       await this.startFamily(family)
     } else {
-      const cb = signingAuthorizationCallback(name)
       const derivedPubkey = bytesToHex(publicKeyFromSecret(algorithm, rawHex))
-      const backend = new Backend(
-        this.ndk,
-        {
-          identity: {
-            keyName: name,
-            pubkey: derivedPubkey,
-            privateKeyHex: rawHex,
-            algorithm
-          }
-        },
-        cb,
-        this.config
-      )
-      this.backends.set(name, backend)
-      await backend.start()
+      this.keyRegistry.set(name, {
+        identity: {
+          keyName: name,
+          pubkey: derivedPubkey,
+          privateKeyHex: rawHex,
+          algorithm
+        }
+      })
+      log.keys(`Registered single identity key in daemon registry: ${name}`)
     }
   }
 }

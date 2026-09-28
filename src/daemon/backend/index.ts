@@ -1,11 +1,14 @@
 import NDK, {
   NDKNip46Backend,
+  NDKNip46DaemonBackend,
   NDKMlDsaSigner,
   NDKPrivateKeySigner,
   NDKTransportCredential,
   NDKEvent,
   NDKUser,
   Nip46PermitCallback,
+  Nip46DaemonPermitCallback,
+  Nip46SessionResolution,
   IEventHandlingStrategy
 } from '@nostr-dev-kit/ndk'
 import { IConfig } from '../../config/index.js'
@@ -17,6 +20,7 @@ import { checkpointService } from '../../services/CheckpointService.js'
 import prisma from '../../db.js'
 import { base64 } from '@scure/base'
 import { bytesToHex } from '@noble/hashes/utils.js'
+import type { TransportKemManager } from '../lib/transport-kem.js'
 
 export async function validateKidNomination(
   ndk: NDK,
@@ -40,7 +44,7 @@ export async function validateKidNomination(
 }
 
 export class VeritySignEventStrategy implements IEventHandlingStrategy {
-  constructor(private backend: Backend, private family: KeyFamily) {}
+  constructor(private backend?: Backend, private family?: KeyFamily) {}
 
   async handle(backend: NDKNip46Backend, id: string, remotePubkey: string, params: string[]): Promise<string | undefined> {
     const [eventString] = params
@@ -64,12 +68,20 @@ export class VeritySignEventStrategy implements IEventHandlingStrategy {
       return undefined
     }
 
+    const family: KeyFamily | undefined = (backend as any).sessionBinding?.context?.family ?? (backend as any).family ?? this.family
+    if (!family) {
+      log.signing(`sign_event request from ${remotePubkey} rejected: no identity family resolved`)
+      return undefined
+    }
+
+    const identitySigner = (backend as any).identitySigner ?? (backend as any).backend?.identitySigner ?? this.backend?.identitySigner ?? new NDKMlDsaSigner(family.identity.privateKeyHex)
+
     // Nomination validation (relay round-trip, only after client is authorized)
-    const identityUid = identityIdFromPublicKey(this.family.identity.pubkey)
+    const identityUid = identityIdFromPublicKey(family.identity.pubkey)
     await validateKidNomination(backend.ndk, (event as any).kid, identityUid)
 
     // Sign with ML-DSA identity signer
-    await event.sign(this.backend.identitySigner)
+    await event.sign(identitySigner)
 
     // Preserve verbatim template fields on raw event
     const raw = event.rawEvent()
@@ -81,21 +93,24 @@ export class VeritySignEventStrategy implements IEventHandlingStrategy {
 }
 
 export class VerityNip44EncryptStrategy implements IEventHandlingStrategy {
-  constructor(private backend: Backend, private family: KeyFamily) {}
+  constructor(private backend?: Backend, private family?: KeyFamily) {}
 
   async handle(backend: NDKNip46Backend, id: string, remotePubkey: string, params: string[]): Promise<string | undefined> {
-    if (!this.backend.encSigner) {
+    const family: KeyFamily | undefined = (backend as any).sessionBinding?.context?.family ?? (backend as any).family ?? this.family
+    const encSigner = (backend as any).encSigner ?? (backend as any).backend?.encSigner ?? this.backend?.encSigner ?? (family?.enc ? new NDKPrivateKeySigner(family.enc.privateKeyHex) : undefined)
+
+    if (!encSigner) {
       throw new Error('No encryption key configured for account')
     }
 
     const [recipientPubkey, payload] = params
-    const ownIdentityPubkey = this.family.identity.pubkey
-    const ownUid = identityIdFromPublicKey(ownIdentityPubkey)
-    const ownEncPubkey = this.family.enc?.pubkey
+    const ownIdentityPubkey = family?.identity?.pubkey
+    const ownUid = ownIdentityPubkey ? identityIdFromPublicKey(ownIdentityPubkey) : undefined
+    const ownEncPubkey = family?.enc?.pubkey
 
     let targetPubkey = recipientPubkey
     if (targetPubkey === ownIdentityPubkey || targetPubkey === ownUid || targetPubkey === ownEncPubkey) {
-      targetPubkey = (await this.backend.encSigner.user()).pubkey
+      targetPubkey = (await encSigner.user()).pubkey
     }
 
     const recipientUser = new NDKUser({ pubkey: targetPubkey })
@@ -111,26 +126,29 @@ export class VerityNip44EncryptStrategy implements IEventHandlingStrategy {
       return undefined
     }
 
-    return await this.backend.encSigner.encrypt(recipientUser, payload, 'nip44')
+    return await encSigner.encrypt(recipientUser, payload, 'nip44')
   }
 }
 
 export class VerityNip44DecryptStrategy implements IEventHandlingStrategy {
-  constructor(private backend: Backend, private family: KeyFamily) {}
+  constructor(private backend?: Backend, private family?: KeyFamily) {}
 
   async handle(backend: NDKNip46Backend, id: string, remotePubkey: string, params: string[]): Promise<string | undefined> {
-    if (!this.backend.encSigner) {
+    const family: KeyFamily | undefined = (backend as any).sessionBinding?.context?.family ?? (backend as any).family ?? this.family
+    const encSigner = (backend as any).encSigner ?? (backend as any).backend?.encSigner ?? this.backend?.encSigner ?? (family?.enc ? new NDKPrivateKeySigner(family.enc.privateKeyHex) : undefined)
+
+    if (!encSigner) {
       throw new Error('No encryption key configured for account')
     }
 
     const [senderPubkey, payload] = params
-    const ownIdentityPubkey = this.family.identity.pubkey
-    const ownUid = identityIdFromPublicKey(ownIdentityPubkey)
-    const ownEncPubkey = this.family.enc?.pubkey
+    const ownIdentityPubkey = family?.identity?.pubkey
+    const ownUid = ownIdentityPubkey ? identityIdFromPublicKey(ownIdentityPubkey) : undefined
+    const ownEncPubkey = family?.enc?.pubkey
 
     let targetPubkey = senderPubkey
     if (targetPubkey === ownIdentityPubkey || targetPubkey === ownUid || targetPubkey === ownEncPubkey) {
-      targetPubkey = (await this.backend.encSigner.user()).pubkey
+      targetPubkey = (await encSigner.user()).pubkey
     }
 
     const senderUser = new NDKUser({ pubkey: targetPubkey })
@@ -146,14 +164,14 @@ export class VerityNip44DecryptStrategy implements IEventHandlingStrategy {
       return undefined
     }
 
-    return await this.backend.encSigner.decrypt(senderUser, payload, 'nip44')
+    return await encSigner.decrypt(senderUser, payload, 'nip44')
   }
 }
 
 export class VerityKemDecryptStrategy implements IEventHandlingStrategy {
   constructor(
-    private backend: Backend,
-    private family: KeyFamily,
+    private backend?: Backend,
+    private family?: KeyFamily,
     private decapsulate: (secretKeyHex: string, payload: string) => string = kemDecrypt
   ) {}
 
@@ -175,7 +193,8 @@ export class VerityKemDecryptStrategy implements IEventHandlingStrategy {
       return undefined
     }
 
-    const kemFamily = this.backend.family?.kem ?? this.family.kem
+    const family: KeyFamily | undefined = (backend as any).sessionBinding?.context?.family ?? (backend as any).family ?? this.backend?.family ?? this.family
+    const kemFamily = family?.kem
 
     const candidateKeys: string[] = []
     if (kemFamily?.active?.privateKeyHex) {
@@ -197,7 +216,7 @@ export class VerityKemDecryptStrategy implements IEventHandlingStrategy {
       try {
         const decrypted = this.decapsulate(secretKeyHex, payload)
         checkpointService.broadcast('signer.kem_decrypt.completed', {
-          keyName: this.family.identity.keyName.substring(0, 16),
+          keyName: family ? family.identity.keyName.substring(0, 16) : 'unknown',
           id
         })
         return decrypted
@@ -211,7 +230,7 @@ export class VerityKemDecryptStrategy implements IEventHandlingStrategy {
 }
 
 export class VerityConnectStrategy implements IEventHandlingStrategy {
-  constructor(private backend: Backend, private family: KeyFamily) {}
+  constructor(private backend?: Backend, private family?: KeyFamily) {}
 
   async handle(backend: NDKNip46Backend, id: string, remotePubkey: string, params: string[]): Promise<string | undefined> {
     const token = params[1]
@@ -237,6 +256,9 @@ export class VerityConnectStrategy implements IEventHandlingStrategy {
       return undefined
     }
 
+    const family: KeyFamily | undefined = (backend as any).sessionBinding?.context?.family ?? (backend as any).family ?? this.family
+    const keyName = family?.identity?.keyName ?? (backend as any).keyName
+
     let clientKemHex: string | undefined
     if (rawKemCandidate) {
       try {
@@ -253,27 +275,29 @@ export class VerityConnectStrategy implements IEventHandlingStrategy {
       }
     }
 
-    if (clientKemHex) {
+    if (keyName) {
       try {
         const normalizedRemote = remotePubkey.length === 2624 ? identityIdFromPublicKey(remotePubkey) : remotePubkey
+        const updateData: any = { updatedAt: new Date(), lastUsedAt: new Date() }
+        if (clientKemHex) {
+          updateData.clientKemPubkey = clientKemHex
+        }
         await prisma.session.updateMany({
           where: {
-            keyName: this.family.identity.keyName,
+            keyName,
             clientPubkey: { in: [remotePubkey, normalizedRemote] }
           },
-          data: {
-            clientKemPubkey: clientKemHex
-          }
+          data: updateData
         })
-        debug(`saved clientKemPubkey ${clientKemHex} for ${remotePubkey}`)
+        debug(`updated session for keyName=${keyName}, client=${remotePubkey}`)
       } catch (e) {
-        log.acl('Failed to save clientKemPubkey on session', e)
+        log.acl('Failed to update session on connect', e)
       }
     }
 
     const sessionUid = remotePubkey.length === 2624 ? identityIdFromPublicKey(remotePubkey) : remotePubkey
     checkpointService.broadcast('signer.rpc.connect.completed', {
-      keyName: this.family.identity.keyName.substring(0, 16),
+      keyName: keyName ? keyName.substring(0, 16) : 'unknown',
       sessionUid: sessionUid.substring(0, 16)
     })
 
@@ -282,6 +306,140 @@ export class VerityConnectStrategy implements IEventHandlingStrategy {
   }
 }
 
+/**
+ * Consolidated DaemonBackend serving all identities through a single subscription.
+ */
+export class DaemonBackend extends NDKNip46DaemonBackend {
+  public keyRegistry: Map<string, KeyFamily>
+  public transportKemManager: TransportKemManager
+
+  constructor(
+    ndk: NDK,
+    daemonCredential: NDKTransportCredential,
+    keyRegistry: Map<string, KeyFamily>,
+    transportKemManager: TransportKemManager,
+    permitCallback: Nip46DaemonPermitCallback,
+    config: IConfig
+  ) {
+    const resolvePeerKemKey = async (clientPubkey: string) => {
+      const normalizedPubkey = clientPubkey.length === 2624 ? identityIdFromPublicKey(clientPubkey) : clientPubkey
+      const session = await prisma.session.findFirst({
+        where: {
+          clientPubkey: { in: [clientPubkey, normalizedPubkey] },
+          revokedAt: null
+        },
+        orderBy: { updatedAt: 'desc' },
+        select: { clientKemPubkey: true }
+      })
+      const key = session?.clientKemPubkey
+      if (!key || key.length !== 2368) {
+        return undefined
+      }
+      return key
+    }
+
+    const resolveSession = async (transportUid: string, method?: string, params?: any[]): Promise<Nip46SessionResolution | undefined> => {
+      const normalizedUid = transportUid.length === 2624 ? identityIdFromPublicKey(transportUid) : transportUid
+
+      // 1. On connect, resolve strictly for the requested user candidate from params[0]
+      if (method === 'connect' && params && params[0]) {
+        const candidate = params[0]
+        for (const [name, fam] of keyRegistry.entries()) {
+          if (name === candidate || fam.identity.pubkey === candidate || identityIdFromPublicKey(fam.identity.pubkey) === candidate) {
+            const specificSession = await prisma.session.findFirst({
+              where: {
+                keyName: name,
+                clientPubkey: { in: [transportUid, normalizedUid] },
+                revokedAt: null
+              }
+            })
+            if (specificSession) {
+              return {
+                keyName: name,
+                responseKemKey: specificSession.clientKemPubkey ?? undefined,
+                identitySigner: new NDKMlDsaSigner(fam.identity.privateKeyHex),
+                identityPubkey: fam.identity.pubkey,
+                context: { family: fam }
+              }
+            }
+            return undefined
+          }
+        }
+        return undefined
+      }
+
+      // 2. Otherwise find the most recently active session for this client
+      let session = await prisma.session.findFirst({
+        where: {
+          clientPubkey: { in: [transportUid, normalizedUid] },
+          revokedAt: null
+        },
+        orderBy: { updatedAt: 'desc' }
+      })
+
+      if (!session) return undefined
+
+      const family = keyRegistry.get(session.keyName)
+      if (!family) {
+        log.daemon(`Session found for key ${session.keyName} but key family is not loaded in daemon registry`)
+        return undefined
+      }
+
+      return {
+        keyName: session.keyName,
+        responseKemKey: session.clientKemPubkey ?? undefined,
+        identitySigner: new NDKMlDsaSigner(family.identity.privateKeyHex),
+        identityPubkey: family.identity.pubkey,
+        context: { family }
+      }
+    }
+
+    super(ndk, daemonCredential, {
+      resolveSession,
+      permitCallback,
+      relayUrls: config.nostr.relays,
+      rpcOptions: {
+        envelopeMode: 'kem',
+        resolvePeerKemKey,
+        responseCapable: true
+      },
+      onStaleKeySent: (transportUid: string) => {
+        checkpointService.broadcast('signer.rpc.kem_stale_key', {
+          uid: transportUid.substring(0, 16)
+        })
+      },
+      onRequestReceived: ({ id, method, transportUid, keyName }) => {
+        checkpointService.broadcast('signer.rpc.request.received', {
+          id,
+          method,
+          uid: transportUid.substring(0, 16),
+          keyName: keyName ? keyName.substring(0, 16) : undefined
+        })
+      },
+      onResponseSent: ({ id, method, transportUid, keyName }) => {
+        checkpointService.broadcast('signer.rpc.response.sent', {
+          id,
+          method,
+          uid: transportUid.substring(0, 16),
+          keyName: keyName ? keyName.substring(0, 16) : undefined
+        })
+      }
+    })
+
+    this.keyRegistry = keyRegistry
+    this.transportKemManager = transportKemManager
+
+    this.setStrategy('connect', new VerityConnectStrategy(this as any, undefined as any))
+    this.setStrategy('sign_event', new VeritySignEventStrategy(this as any, undefined as any))
+    this.setStrategy('nip44_encrypt', new VerityNip44EncryptStrategy(this as any, undefined as any))
+    this.setStrategy('nip44_decrypt', new VerityNip44DecryptStrategy(this as any, undefined as any))
+    this.setStrategy('kem_decrypt', new VerityKemDecryptStrategy(this as any, undefined as any))
+  }
+}
+
+/**
+ * Per-user Backend class (maintained for unit tests and backwards compatibility).
+ */
 export class Backend extends NDKNip46Backend {
   public identitySigner: NDKMlDsaSigner
   public encSigner?: NDKPrivateKeySigner

@@ -699,6 +699,24 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
           return Response.json({ ok: true }, { headers })
         }
 
+        // POST /testing/reset
+        if (url.pathname === '/testing/reset' && req.method === 'POST') {
+          try {
+            await prisma.signingCondition.deleteMany({})
+            await prisma.policy.deleteMany({})
+            await prisma.session.deleteMany({})
+            await prisma.audit.deleteMany({})
+            await prisma.key.deleteMany({})
+            if (daemon.keyRegistry) {
+              daemon.keyRegistry.clear()
+            }
+            checkpointService.reset()
+            return Response.json({ ok: true }, { headers })
+          } catch (e: any) {
+            return Response.json({ error: e.message }, { status: 500, headers })
+          }
+        }
+
         // GET /testing/health/relay
         if (url.pathname === '/testing/health/relay' && req.method === 'GET') {
           const qsHost = url.searchParams.get('url')
