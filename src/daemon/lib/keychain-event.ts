@@ -153,8 +153,7 @@ export async function publishGenesisEntry(
   platformServiceEntryId: string,
   createdAt?: number,
   ndkInstance?: NDK,
-  encPubkey?: string,
-  legacyEncPubkey?: string
+  encPubkey?: string
 ): Promise<string> {
   if (!relayUrls || relayUrls.length === 0) {
     throw new Error('No relay URLs configured — cannot publish Kind 297')
@@ -198,34 +197,16 @@ export async function publishGenesisEntry(
       throw new Error('encPubkey is required for ML-DSA-44 genesis entry')
     }
     let encKey: string
-    if (encPubkey.startsWith('ml-kem-768:') || encPubkey.startsWith('secp256k1-nip44:')) {
+    if (encPubkey.startsWith('ml-kem-768:')) {
       encKey = encPubkey
     } else {
       const encBytes = hexToBytes(encPubkey)
       if (encBytes.length === 1184) {
         encKey = `ml-kem-768:${base64.encode(encBytes)}`
-      } else if (encBytes.length === 32) {
-        encKey = `secp256k1-nip44:${base64.encode(encBytes)}`
       } else {
         throw new Error(
-          `Invalid encPubkey byte length: expected 1184 (ml-kem-768) or 32 (secp256k1-nip44), got ${encBytes.length}`
+          `Invalid encPubkey byte length: expected 1184 (ml-kem-768), got ${encBytes.length}`
         )
-      }
-    }
-
-    let legacyEncKey: string | undefined
-    if (legacyEncPubkey) {
-      if (legacyEncPubkey.startsWith('secp256k1-nip44:')) {
-        legacyEncKey = legacyEncPubkey
-      } else {
-        const legacyBytes = hexToBytes(legacyEncPubkey)
-        if (legacyBytes.length === 32) {
-          legacyEncKey = `secp256k1-nip44:${base64.encode(legacyBytes)}`
-        } else {
-          throw new Error(
-            `Invalid legacyEncPubkey byte length: expected 32 (secp256k1-nip44), got ${legacyBytes.length}`
-          )
-        }
       }
     }
 
@@ -250,8 +231,7 @@ export async function publishGenesisEntry(
       version: 1,
       keys: {
         sign: signKey,
-        enc: encKey,
-        ...(legacyEncKey ? { legacy_enc: legacyEncKey } : {})
+        enc: encKey
       },
       valid: {
         from: validFrom

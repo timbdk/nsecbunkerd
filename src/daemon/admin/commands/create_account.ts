@@ -79,14 +79,10 @@ export default async function handle(
             const kemRow = await prisma.key.findFirst({
               where: { parentKeyName: username, role: 'kem', status: 'ACTIVE' }
             })
-            const encRow = await prisma.key.findFirst({
-              where: { parentKeyName: username, role: 'enc', status: 'ACTIVE' }
-            })
-            const genesisEncPubkey = kemRow?.pubkey || encRow?.pubkey
-            const legacyEncPubkey = kemRow ? encRow?.pubkey : undefined
-            if (!genesisEncPubkey) {
-              throw new Error(`Active encryption key missing for account: ${username}`)
+            if (!kemRow?.pubkey) {
+              throw new Error(`Active KEM encryption key missing for account: ${username}`)
             }
+            const genesisEncPubkey = kemRow.pubkey
             // Idempotency: both publishGenesisEntry and publishUsernameEvent query first.
             // If a crash occurred between genesis and 415 publication, this branch self-heals
             // by publishing the missing Kind 415 with deterministic content and matching kid.
@@ -98,8 +94,7 @@ export default async function handle(
               daemonServiceEntryId,
               undefined,
               admin.ndk,
-              genesisEncPubkey,
-              legacyEncPubkey
+              genesisEncPubkey
             )
             await publishUsernameEvent(
               existingSigner,
@@ -123,25 +118,20 @@ export default async function handle(
     }
 
     const identityKeypair = keygen('ml-dsa-44')
-    const encKeypair = keygen('secp256k1-nip44')
     const kemKeypair = keygen('ml-kem-768')
 
     const identitySecretHex = bytesToHex(identityKeypair.secretKey)
     const identityPubkeyHex = bytesToHex(identityKeypair.publicKey)
-    const encSecretHex = bytesToHex(encKeypair.secretKey)
-    const encPubkeyHex = bytesToHex(encKeypair.publicKey)
     const kemSecretHex = bytesToHex(kemKeypair.secretKey)
     const kemPubkeyHex = bytesToHex(kemKeypair.publicKey)
 
     const keyName = username
-    const encKeyName = `${username}#enc`
     const kemKeyName = `${username}#kem`
 
-    log.admin(`Created triple keypair for ${username}`)
+    log.admin(`Created dual keypair for ${username}`)
 
     log.admin(`Encrypting keys for ${keyName}`)
     const encryptedIdentityData = encryptPrivateKey(identitySecretHex, keyName)
-    const encryptedEncData = encryptPrivateKey(encSecretHex, encKeyName)
     const encryptedKemData = encryptPrivateKey(kemSecretHex, kemKeyName)
 
     log.admin(`Backing up keys for ${keyName}`)
@@ -149,21 +139,14 @@ export default async function handle(
     if (!backupResult1.success) {
       throw new Error(`Backup failed for ${keyName}: ${backupResult1.error}`)
     }
-    const backupResult2 = await backupKey(encKeyName, encryptedEncData, encPubkeyHex)
+    const backupResult2 = await backupKey(kemKeyName, encryptedKemData, kemPubkeyHex)
     if (!backupResult2.success) {
-      throw new Error(`Backup failed for ${encKeyName}: ${backupResult2.error}`)
-    }
-    const backupResult3 = await backupKey(kemKeyName, encryptedKemData, kemPubkeyHex)
-    if (!backupResult3.success) {
-      throw new Error(`Backup failed for ${kemKeyName}: ${backupResult3.error}`)
+      throw new Error(`Backup failed for ${kemKeyName}: ${backupResult2.error}`)
     }
 
     log.admin(`Storing keys locally for ${keyName}`)
     await storeKey(keyName, identitySecretHex, identityPubkeyHex, 'ml-dsa-44', 'identity')
     await markKeyBackedUp(keyName)
-
-    await storeKey(encKeyName, encSecretHex, encPubkeyHex, 'secp256k1-nip44', 'enc', keyName)
-    await markKeyBackedUp(encKeyName)
 
     await storeKey(kemKeyName, kemSecretHex, kemPubkeyHex, 'ml-kem-768', 'kem', keyName)
     await markKeyBackedUp(kemKeyName)
@@ -188,8 +171,7 @@ export default async function handle(
       daemonServiceEntryId,
       undefined,
       admin.ndk,
-      kemPubkeyHex,
-      encPubkeyHex
+      kemPubkeyHex
     )
     log.admin(`[${req.id}] Kind 297 genesis published for ${username} (id: ${genesisEntryId})`)
 
@@ -276,8 +258,6 @@ async function publishInvitedEventIfNeeded(
 export async function grantPermissions(req: NDKRpcRequest, keyName: string, clientPubkey?: string) {
   await allowAllRequestsFromKey(req.pubkey, keyName, 'connect', undefined, 'registrar')
   await allowAllRequestsFromKey(req.pubkey, keyName, 'sign_event', undefined, 'registrar', { kind: null })
-  await allowAllRequestsFromKey(req.pubkey, keyName, 'nip44_encrypt', undefined, 'registrar')
-  await allowAllRequestsFromKey(req.pubkey, keyName, 'nip44_decrypt', undefined, 'registrar')
   await allowAllRequestsFromKey(req.pubkey, keyName, 'kem_decrypt', undefined, 'registrar')
   await allowAllRequestsFromKey(req.pubkey, keyName, 'switch_relays', undefined, 'registrar')
   await allowAllRequestsFromKey(req.pubkey, keyName, 'get_public_key', undefined, 'registrar')
@@ -286,8 +266,6 @@ export async function grantPermissions(req: NDKRpcRequest, keyName: string, clie
   if (clientPubkey) {
     await allowAllRequestsFromKey(clientPubkey, keyName, 'connect', undefined, 'client')
     await allowAllRequestsFromKey(clientPubkey, keyName, 'sign_event', undefined, 'client', { kind: null })
-    await allowAllRequestsFromKey(clientPubkey, keyName, 'nip44_encrypt', undefined, 'client')
-    await allowAllRequestsFromKey(clientPubkey, keyName, 'nip44_decrypt', undefined, 'client')
     await allowAllRequestsFromKey(clientPubkey, keyName, 'kem_decrypt', undefined, 'client')
     await allowAllRequestsFromKey(clientPubkey, keyName, 'switch_relays', undefined, 'client')
     await allowAllRequestsFromKey(clientPubkey, keyName, 'get_public_key', undefined, 'client')

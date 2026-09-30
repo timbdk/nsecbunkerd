@@ -50,7 +50,7 @@ if (fs.existsSync(configFile)) {
       console.error(
         '[FATAL] nsecbunker.json contains legacy key material (admin.key / keys.admin / npubs).\n' +
         'Remove key material from nsecbunker.json. Daemon identity is now configured via:\n' +
-        '  SIGNER_DAEMON_KEY (ML-DSA-44 hex), SIGNER_DAEMON_ECDH_KEY (secp256k1 hex),\n' +
+        '  SIGNER_DAEMON_KEY (ML-DSA-44 hex), SIGNER_TRANSPORT_KEM_KEY (ML-KEM-768 hex),\n' +
         '  and SIGNER_UID (identity guard). Admin allow-list uses uid-based env vars.'
       )
       process.exit(1)

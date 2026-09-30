@@ -2,10 +2,8 @@ import NDK, {
   NDKNip46Backend,
   NDKNip46DaemonBackend,
   NDKMlDsaSigner,
-  NDKPrivateKeySigner,
   NDKTransportCredential,
   NDKEvent,
-  NDKUser,
   Nip46PermitCallback,
   Nip46DaemonPermitCallback,
   Nip46SessionResolution,
@@ -89,82 +87,6 @@ export class VeritySignEventStrategy implements IEventHandlingStrategy {
     if (parsedEvent.kid) (raw as any).kid = parsedEvent.kid
 
     return JSON.stringify(raw)
-  }
-}
-
-export class VerityNip44EncryptStrategy implements IEventHandlingStrategy {
-  constructor(private backend?: Backend, private family?: KeyFamily) {}
-
-  async handle(backend: NDKNip46Backend, id: string, remotePubkey: string, params: string[]): Promise<string | undefined> {
-    const family: KeyFamily | undefined = (backend as any).sessionBinding?.context?.family ?? (backend as any).family ?? this.family
-    const encSigner = (backend as any).encSigner ?? (backend as any).backend?.encSigner ?? this.backend?.encSigner ?? (family?.enc ? new NDKPrivateKeySigner(family.enc.privateKeyHex) : undefined)
-
-    if (!encSigner) {
-      throw new Error('No encryption key configured for account')
-    }
-
-    const [recipientPubkey, payload] = params
-    const ownIdentityPubkey = family?.identity?.pubkey
-    const ownUid = ownIdentityPubkey ? identityIdFromPublicKey(ownIdentityPubkey) : undefined
-    const ownEncPubkey = family?.enc?.pubkey
-
-    let targetPubkey = recipientPubkey
-    if (targetPubkey === ownIdentityPubkey || targetPubkey === ownUid || targetPubkey === ownEncPubkey) {
-      targetPubkey = (await encSigner.user()).pubkey
-    }
-
-    const recipientUser = new NDKUser({ pubkey: targetPubkey })
-
-    if (
-      !(await backend.pubkeyAllowed({
-        id,
-        pubkey: remotePubkey,
-        method: 'nip44_encrypt',
-        params: payload
-      }))
-    ) {
-      return undefined
-    }
-
-    return await encSigner.encrypt(recipientUser, payload, 'nip44')
-  }
-}
-
-export class VerityNip44DecryptStrategy implements IEventHandlingStrategy {
-  constructor(private backend?: Backend, private family?: KeyFamily) {}
-
-  async handle(backend: NDKNip46Backend, id: string, remotePubkey: string, params: string[]): Promise<string | undefined> {
-    const family: KeyFamily | undefined = (backend as any).sessionBinding?.context?.family ?? (backend as any).family ?? this.family
-    const encSigner = (backend as any).encSigner ?? (backend as any).backend?.encSigner ?? this.backend?.encSigner ?? (family?.enc ? new NDKPrivateKeySigner(family.enc.privateKeyHex) : undefined)
-
-    if (!encSigner) {
-      throw new Error('No encryption key configured for account')
-    }
-
-    const [senderPubkey, payload] = params
-    const ownIdentityPubkey = family?.identity?.pubkey
-    const ownUid = ownIdentityPubkey ? identityIdFromPublicKey(ownIdentityPubkey) : undefined
-    const ownEncPubkey = family?.enc?.pubkey
-
-    let targetPubkey = senderPubkey
-    if (targetPubkey === ownIdentityPubkey || targetPubkey === ownUid || targetPubkey === ownEncPubkey) {
-      targetPubkey = (await encSigner.user()).pubkey
-    }
-
-    const senderUser = new NDKUser({ pubkey: targetPubkey })
-
-    if (
-      !(await backend.pubkeyAllowed({
-        id,
-        pubkey: remotePubkey,
-        method: 'nip44_decrypt',
-        params: payload
-      }))
-    ) {
-      return undefined
-    }
-
-    return await encSigner.decrypt(senderUser, payload, 'nip44')
   }
 }
 
@@ -431,8 +353,6 @@ export class DaemonBackend extends NDKNip46DaemonBackend {
 
     this.setStrategy('connect', new VerityConnectStrategy(this as any, undefined as any))
     this.setStrategy('sign_event', new VeritySignEventStrategy(this as any, undefined as any))
-    this.setStrategy('nip44_encrypt', new VerityNip44EncryptStrategy(this as any, undefined as any))
-    this.setStrategy('nip44_decrypt', new VerityNip44DecryptStrategy(this as any, undefined as any))
     this.setStrategy('kem_decrypt', new VerityKemDecryptStrategy(this as any, undefined as any))
   }
 }
@@ -442,16 +362,13 @@ export class DaemonBackend extends NDKNip46DaemonBackend {
  */
 export class Backend extends NDKNip46Backend {
   public identitySigner: NDKMlDsaSigner
-  public encSigner?: NDKPrivateKeySigner
   public family: KeyFamily
 
   constructor(ndk: NDK, family: KeyFamily, cb: Nip46PermitCallback, config: IConfig) {
     const identitySigner = new NDKMlDsaSigner(family.identity.privateKeyHex)
-    const encSigner = family.enc ? new NDKPrivateKeySigner(family.enc.privateKeyHex) : undefined
     const credential = new NDKTransportCredential(
       identitySigner,
       {
-        ecdh: encSigner,
         kem: family.kem?.active?.privateKeyHex
       },
       ndk
@@ -502,13 +419,10 @@ export class Backend extends NDKNip46Backend {
       responseCapable: true
     })
     this.identitySigner = identitySigner
-    this.encSigner = encSigner
     this.family = family
 
     this.setStrategy('connect', new VerityConnectStrategy(this, family))
     this.setStrategy('sign_event', new VeritySignEventStrategy(this, family))
-    this.setStrategy('nip44_encrypt', new VerityNip44EncryptStrategy(this, family))
-    this.setStrategy('nip44_decrypt', new VerityNip44DecryptStrategy(this, family))
     this.setStrategy('kem_decrypt', new VerityKemDecryptStrategy(this, family))
   }
 

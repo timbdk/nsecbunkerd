@@ -2,7 +2,6 @@ import NDK, {
   NDKEvent,
   NDKKind,
   NDKMlDsaSigner,
-  NDKPrivateKeySigner,
   NDKRelayAuthPolicies,
   NDKRpcRequest,
   NDKRpcResponse,
@@ -34,9 +33,9 @@ import renameAccount from './commands/rename_account.js'
 export type IAdminOpts = {
   allowedUids?: string[]
   registrarUid?: string
-  registrarEcdhPubkey?: string
+  registrarKemPubkey?: string
   authorizerUid?: string
-  authorizerEcdhPubkey?: string
+  authorizerKemPubkey?: string
   adminRelays: string[]
 }
 
@@ -72,12 +71,11 @@ class AdminInterface {
       throw new Error('SIGNER_DAEMON_KEY environment variable not set')
     }
     const daemonSigner = new NDKMlDsaSigner(daemonKey)
-    const daemonEcdhKey = process.env.SIGNER_DAEMON_ECDH_KEY
-    if (!daemonEcdhKey) {
-      throw new Error('SIGNER_DAEMON_ECDH_KEY environment variable not set')
+    const transportKemKey = process.env.SIGNER_TRANSPORT_KEM_KEY
+    if (!transportKemKey) {
+      throw new Error('SIGNER_TRANSPORT_KEM_KEY environment variable not set')
     }
-    const daemonEcdhSigner = new NDKPrivateKeySigner(daemonEcdhKey)
-    const credential = new NDKTransportCredential(daemonSigner, daemonEcdhSigner)
+    const credential = new NDKTransportCredential(daemonSigner, { kem: transportKemKey })
 
     this.rpcSigner = credential
 
@@ -105,19 +103,24 @@ class AdminInterface {
         this.rejectReady(err)
       })
 
-    this.rpc = new NDKNostrRpc(this.ndk, this.rpcSigner, log.admin, opts.adminRelays)
-    this.rpc.on('request', (req) => this.handleRequest(req))
-    this.rpc.adminEcdhPubkeys = new Map<string, string>()
+    const adminKemPubkeys = new Map<string, string>()
     const regUid = opts.registrarUid || process.env.REGISTRAR_UID
-    const regEcdh = opts.registrarEcdhPubkey || process.env.REGISTRAR_ECDH_PUBKEY
-    if (regUid && regEcdh) {
-      this.rpc.adminEcdhPubkeys.set(regUid, regEcdh)
+    const regKem = opts.registrarKemPubkey || process.env.REGISTRAR_KEM_PUBLIC_KEY
+    if (regUid && regKem) {
+      adminKemPubkeys.set(regUid, regKem)
     }
     const authUid = opts.authorizerUid || process.env.AUTHORIZER_UID
-    const authEcdh = opts.authorizerEcdhPubkey || process.env.AUTHORIZER_ECDH_PUBKEY
-    if (authUid && authEcdh) {
-      this.rpc.adminEcdhPubkeys.set(authUid, authEcdh)
+    const authKem = opts.authorizerKemPubkey || process.env.AUTHORIZER_KEM_PUBLIC_KEY
+    if (authUid && authKem) {
+      adminKemPubkeys.set(authUid, authKem)
     }
+
+    this.rpc = new NDKNostrRpc(this.ndk, this.rpcSigner, log.admin, opts.adminRelays, {
+      envelopeMode: 'kem',
+      responseCapable: true,
+      resolvePeerKemKey: (uid) => adminKemPubkeys.get(uid)
+    })
+    this.rpc.on('request', (req) => this.handleRequest(req))
   }
 
   public async config(): Promise<IConfig> {

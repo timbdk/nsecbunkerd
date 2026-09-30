@@ -89,8 +89,6 @@ export async function checkIfPubkeyAllowed(
 export type IMethod =
   | 'connect'
   | 'sign_event'
-  | 'nip44_encrypt'
-  | 'nip44_decrypt'
   | 'kem_decrypt'
   | 'ping'
   | 'switch_relays'

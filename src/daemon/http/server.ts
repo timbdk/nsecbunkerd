@@ -1,7 +1,7 @@
 import { checkpointService } from '../../services/CheckpointService.js'
 import prisma from '../../db.js'
 import { NDKEvent, NDKPrivateKeySigner, NDKMlDsaSigner, DEFAULT_PUBLISH_TIMEOUT_MS } from '@nostr-dev-kit/ndk'
-import { identityIdFromPublicKey, keygen } from 'verity-event-data-module'
+import { identityIdFromPublicKey, keygen, kemEncrypt } from 'verity-event-data-module'
 import { Server } from 'bun'
 import { log, logError } from '../../lib/logger.js'
 
@@ -74,29 +74,6 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
             }
             const identityAlg = 'ml-dsa-44'
 
-            let encSecretHex: string | undefined
-            let encPubkeyHex: string | undefined
-            let shouldStoreEnc = false
-
-            if (encKey) {
-              encSecretHex = encKey.secretKey
-              encPubkeyHex = encKey.publicKey
-              shouldStoreEnc = true
-            } else {
-              const existingEnc = await prisma.key.findFirst({
-                where: { parentKeyName: keyName, role: 'enc', status: 'ACTIVE' }
-              })
-              if (existingEnc) {
-                encPubkeyHex = existingEnc.pubkey
-                encSecretHex = await retrieveKey(existingEnc.keyName)
-              } else {
-                const generatedEnc = keygen('secp256k1-nip44')
-                encSecretHex = Buffer.from(generatedEnc.secretKey).toString('hex')
-                encPubkeyHex = Buffer.from(generatedEnc.publicKey).toString('hex')
-                shouldStoreEnc = true
-              }
-            }
-
             let kemSecretHex: string | undefined
             let kemPubkeyHex: string | undefined
             let shouldStoreKem = false
@@ -121,10 +98,6 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
 
             // Store identity row
             await storeKey(keyName, identitySecretHex, identityPubkeyHex, identityAlg, 'identity')
-            // Store enc row if newly generated or explicitly provided
-            if (shouldStoreEnc && encSecretHex && encPubkeyHex) {
-              await storeKey(`${keyName}#enc`, encSecretHex, encPubkeyHex, 'secp256k1-nip44', 'enc', keyName)
-            }
             // Store kem row if newly generated or explicitly provided
             if (shouldStoreKem && kemSecretHex && kemPubkeyHex) {
               await storeKey(`${keyName}#kem`, kemSecretHex, kemPubkeyHex, 'ml-kem-768', 'kem', keyName)
@@ -140,8 +113,6 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
                 [
                   { method: 'connect' },
                   { method: 'sign_event', allowScope: { kind: null } },
-                  { method: 'nip44_encrypt' },
-                  { method: 'nip44_decrypt' },
                   { method: 'kem_decrypt' },
                   { method: 'switch_relays' },
                   { method: 'get_public_key' },
@@ -162,10 +133,7 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
               }
 
               const attestationPayload = JSON.stringify({ id: 'short-circuit', result: 'attestation' })
-              const encSigner = new NDKPrivateKeySigner(encSecretHex)
-              const targetEncPubkey = clientEncPubkey || encPubkeyHex
-              const clientUser = new (await import('@nostr-dev-kit/ndk')).NDKUser({ pubkey: targetEncPubkey })
-              const encryptedAttestation = await encSigner.encrypt(clientUser, attestationPayload, 'nip44')
+              const encryptedAttestation = kemEncrypt(targetKemPubkey || kemPubkeyHex!, attestationPayload)
 
               const { NDKRelaySet } = await import('@nostr-dev-kit/ndk')
               const uid = identityIdFromPublicKey(identityPubkeyHex)
@@ -212,8 +180,7 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
               daemonServiceEntryId,
               createdAt,
               daemon.ndk,
-              isMlDsa ? kemPubkeyHex : undefined,
-              isMlDsa ? encPubkeyHex : undefined
+              kemPubkeyHex
             )
 
             const { publishUsernameEvent } = await import('../lib/username-event.js')
@@ -237,6 +204,7 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
               success: true,
               keyName,
               pubkey: identityPubkeyHex,
+              kemPubkey: kemPubkeyHex,
               genesisEntryId,
               clientAuthorized: !!clientPubkey
             }, { status: 201, headers })
@@ -273,8 +241,6 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
               [
                 { method: 'connect' },
                 { method: 'sign_event', allowScope: { kind: null } },
-                { method: 'nip44_encrypt' },
-                { method: 'nip44_decrypt' },
                 { method: 'kem_decrypt' },
                 { method: 'switch_relays' },
                 { method: 'get_public_key' },

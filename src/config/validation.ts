@@ -33,14 +33,14 @@ export interface DaemonEnvValidationResult {
 }
 
 /**
- * Validates the daemon environment against Phase 03 SSOT requirements.
- * Enforces SIGNER_KEK, SIGNER_DAEMON_KEY, SIGNER_DAEMON_ECDH_KEY, and VERITY_PLATFORM_ID.
+ * Validates the daemon environment against Phase 05 requirements.
+ * Enforces SIGNER_KEK, SIGNER_DAEMON_KEY, SIGNER_TRANSPORT_KEM_KEY, and VERITY_PLATFORM_ID.
  */
 export function validateDaemonEnvironment(env: NodeJS.ProcessEnv): DaemonEnvValidationResult {
   if (env.SIGNER_MASTER_KEY) {
     return {
       valid: false,
-      error: 'FATAL: SIGNER_MASTER_KEY is deprecated and must not be used. Use SIGNER_KEK, SIGNER_DAEMON_KEY, SIGNER_DAEMON_ECDH_KEY, and SIGNER_UID.'
+      error: 'FATAL: SIGNER_MASTER_KEY is deprecated and must not be used. Use SIGNER_KEK, SIGNER_DAEMON_KEY, SIGNER_TRANSPORT_KEM_KEY, and SIGNER_UID.'
     }
   }
 
@@ -69,14 +69,6 @@ export function validateDaemonEnvironment(env: NodeJS.ProcessEnv): DaemonEnvVali
     return {
       valid: false,
       error: 'CRITICAL: SIGNER_DAEMON_KEY must be a 5120-character hex string (ML-DSA-44 secret key)'
-    }
-  }
-
-  const daemonEcdhKey = env.SIGNER_DAEMON_ECDH_KEY
-  if (!daemonEcdhKey || daemonEcdhKey.length !== 64 || !/^[0-9a-fA-F]{64}$/.test(daemonEcdhKey)) {
-    return {
-      valid: false,
-      error: 'CRITICAL: SIGNER_DAEMON_ECDH_KEY environment variable not set or invalid (must be 64-character hex string)'
     }
   }
 
@@ -137,11 +129,11 @@ export function validateDaemonEnvironment(env: NodeJS.ProcessEnv): DaemonEnvVali
     }
   }
 
-  const regEcdh = env.REGISTRAR_ECDH_PUBKEY
-  if (!regEcdh || regEcdh.length !== 64 || !/^[0-9a-fA-F]{64}$/.test(regEcdh)) {
+  const regKem = env.REGISTRAR_KEM_PUBLIC_KEY
+  if (!regKem || regKem.length !== 2368 || !/^[0-9a-fA-F]{2368}$/.test(regKem)) {
     return {
       valid: false,
-      error: 'CRITICAL: REGISTRAR_ECDH_PUBKEY environment variable not set or invalid (must be 64-character hex string)'
+      error: 'CRITICAL: REGISTRAR_KEM_PUBLIC_KEY environment variable not set or invalid (must be 2368-character hex string)'
     }
   }
 
@@ -153,11 +145,11 @@ export function validateDaemonEnvironment(env: NodeJS.ProcessEnv): DaemonEnvVali
     }
   }
 
-  const authEcdh = env.AUTHORIZER_ECDH_PUBKEY
-  if (!authEcdh || authEcdh.length !== 64 || !/^[0-9a-fA-F]{64}$/.test(authEcdh)) {
+  const authKem = env.AUTHORIZER_KEM_PUBLIC_KEY
+  if (!authKem || authKem.length !== 2368 || !/^[0-9a-fA-F]{2368}$/.test(authKem)) {
     return {
       valid: false,
-      error: 'CRITICAL: AUTHORIZER_ECDH_PUBKEY environment variable not set or invalid (must be 64-character hex string)'
+      error: 'CRITICAL: AUTHORIZER_KEM_PUBLIC_KEY environment variable not set or invalid (must be 2368-character hex string)'
     }
   }
 

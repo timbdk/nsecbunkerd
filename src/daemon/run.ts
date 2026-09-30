@@ -129,16 +129,16 @@ export class Daemon {
       )
     }
     const registrarUid = process.env.REGISTRAR_UID
-    const registrarEcdhPubkey = process.env.REGISTRAR_ECDH_PUBKEY
+    const registrarKemPubkey = process.env.REGISTRAR_KEM_PUBLIC_KEY
     const authorizerUid = process.env.AUTHORIZER_UID
-    const authorizerEcdhPubkey = process.env.AUTHORIZER_ECDH_PUBKEY
+    const authorizerKemPubkey = process.env.AUTHORIZER_KEM_PUBLIC_KEY
     this.adminInterface = new AdminInterface(
       {
         ...config.admin,
         registrarUid,
-        registrarEcdhPubkey,
+        registrarKemPubkey,
         authorizerUid,
-        authorizerEcdhPubkey
+        authorizerKemPubkey
       },
       config
     )
@@ -156,16 +156,13 @@ export class Daemon {
     })
 
     // Assign a signer to the NDK instance so it can handle NIP-42 AUTH challenges
-    // Using SIGNER_DAEMON_KEY + SIGNER_DAEMON_ECDH_KEY for the daemon's own connection authentication
+    // Using SIGNER_DAEMON_KEY + SIGNER_TRANSPORT_KEM_KEY for the daemon's own connection authentication
     log.daemon(`SIGNER_DAEMON_KEY: ${process.env.SIGNER_DAEMON_KEY ? 'present' : 'missing'}`)
     if (process.env.SIGNER_DAEMON_KEY) {
       log.daemon('Daemon NDK Signer configured with SIGNER_DAEMON_KEY')
       const daemonSigner = new NDKMlDsaSigner(process.env.SIGNER_DAEMON_KEY)
-      if (!process.env.SIGNER_DAEMON_ECDH_KEY) {
-        throw new Error('SIGNER_DAEMON_ECDH_KEY environment variable not set')
-      }
-      const daemonEcdhSigner = new NDKPrivateKeySigner(process.env.SIGNER_DAEMON_ECDH_KEY)
-      this.ndk.signer = new NDKTransportCredential(daemonSigner, daemonEcdhSigner, this.ndk)
+      const transportKemKey = process.env.SIGNER_TRANSPORT_KEM_KEY
+      this.ndk.signer = new NDKTransportCredential(daemonSigner, { kem: transportKemKey }, this.ndk)
       // Enable NIP-42 auto-auth so the relay accepts writes from this connection
       this.ndk.relayAuthDefaultPolicy = NDKRelayAuthPolicies.signIn({ ndk: this.ndk })
     }
@@ -257,7 +254,6 @@ export class Daemon {
 
     logStartup('SIGNER_KEK validated')
     logStartup('SIGNER_DAEMON_KEY validated')
-    logStartup('SIGNER_DAEMON_ECDH_KEY validated')
     logStartup('SIGNER_TRANSPORT_KEM_KEY validated')
     if (process.env.SIGNER_UID) {
       logStartup('SIGNER_UID verified against derived daemon key')
@@ -427,11 +423,9 @@ export class Daemon {
   async startDaemonBackend() {
     const daemonKey = process.env.SIGNER_DAEMON_KEY!
     const daemonSigner = new NDKMlDsaSigner(daemonKey)
-    const daemonEcdhSigner = process.env.SIGNER_DAEMON_ECDH_KEY ? new NDKPrivateKeySigner(process.env.SIGNER_DAEMON_ECDH_KEY) : undefined
     const daemonCredential = new NDKTransportCredential(
       daemonSigner,
       {
-        ecdh: daemonEcdhSigner,
         kem: this.transportKemManager.activeKey.secretKeyHex
       },
       this.ndk
