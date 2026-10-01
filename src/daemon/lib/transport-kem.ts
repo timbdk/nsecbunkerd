@@ -34,6 +34,8 @@ export class TransportKemManager {
   public overlapKey: OverlapTransportKeypair | null = null
   public clock: () => number
   public defaultWindowSeconds: number
+  private initialKeyHex: string
+  private initialOverlapKeyHex?: string
 
   constructor(
     initialKeyHex: string,
@@ -41,6 +43,9 @@ export class TransportKemManager {
     defaultWindowSecondsOrClock?: number | (() => number),
     clock: () => number = () => Date.now()
   ) {
+    this.initialKeyHex = initialKeyHex
+    this.initialOverlapKeyHex = initialOverlapKeyHex
+
     if (typeof defaultWindowSecondsOrClock === 'function') {
       this.clock = defaultWindowSecondsOrClock
       this.defaultWindowSeconds = 86400
@@ -63,6 +68,26 @@ export class TransportKemManager {
         publicKeyHex: bytesToHex(overlapPubBytes),
         expiresAt: now + this.defaultWindowSeconds * 1000
       }
+    }
+  }
+
+  reset(customInitialKeyHex?: string): void {
+    const keyHex = customInitialKeyHex ?? this.initialKeyHex
+    const activePubBytes = publicKeyFromSecret('ml-kem-768', keyHex)
+    this.activeKey = {
+      secretKeyHex: keyHex,
+      publicKeyHex: bytesToHex(activePubBytes)
+    }
+    if (!customInitialKeyHex && this.initialOverlapKeyHex) {
+      const overlapPubBytes = publicKeyFromSecret('ml-kem-768', this.initialOverlapKeyHex)
+      const now = this.clock()
+      this.overlapKey = {
+        secretKeyHex: this.initialOverlapKeyHex,
+        publicKeyHex: bytesToHex(overlapPubBytes),
+        expiresAt: now + this.defaultWindowSeconds * 1000
+      }
+    } else {
+      this.overlapKey = null
     }
   }
 

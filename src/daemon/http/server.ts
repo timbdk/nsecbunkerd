@@ -676,6 +676,9 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
             if (daemon.keyRegistry) {
               daemon.keyRegistry.clear()
             }
+            if (daemon.transportKemManager) {
+              daemon.transportKemManager.reset()
+            }
             checkpointService.reset()
             return Response.json({ ok: true }, { headers })
           } catch (e: any) {
