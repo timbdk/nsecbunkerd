@@ -115,7 +115,7 @@ class AdminInterface {
       adminKemPubkeys.set(authUid, authKem)
     }
 
-    this.rpc = new NDKNostrRpc(this.ndk, this.rpcSigner, log.admin, opts.adminRelays, {
+    this.rpc = new NDKNostrRpc(this.ndk, this.rpcSigner, log.admin, undefined, {
       envelopeMode: 'kem',
       responseCapable: true,
       resolvePeerKemKey: (uid) => adminKemPubkeys.get(uid)
@@ -131,6 +131,37 @@ class AdminInterface {
     return identityIdFromPublicKey((await this.rpcSigner.user()).pubkey)
   }
 
+  private isSubscribing = false
+  private resubscribePending = false
+
+  private async subscribeAdminCommands(): Promise<void> {
+    if (!this.signerUser) return
+    if (this.isSubscribing) {
+      this.resubscribePending = true
+      return
+    }
+    this.isSubscribing = true
+    try {
+      do {
+        this.resubscribePending = false
+        if (this.adminSub) {
+          try {
+            this.adminSub.stop()
+          } catch {}
+          this.adminSub = null as any
+        }
+        const signerUid = identityIdFromPublicKey(this.signerUser.pubkey)
+        log.admin(`Subscribing to admin commands for ${signerUid.substring(0, 16)}...`)
+        this.adminSub = await this.rpc.subscribe({
+          kinds: [KIND_ADMIN_COMMAND as number],
+          '#p': [signerUid]
+        })
+      } while (this.resubscribePending)
+    } finally {
+      this.isSubscribing = false
+    }
+  }
+
   private async connect() {
     if (this.allowedUids.length <= 0 && !this.opts.registrarUid) {
       log.admin(`❌ Admin interface not starting because no admin uids/registrarUid were provided`)
@@ -140,6 +171,12 @@ class AdminInterface {
 
     this.ndk.pool.on('relay:connect', (r) => log.admin(`✅ nsecBunker Admin Interface ready (connected to ${r.url})`))
     this.ndk.pool.on('relay:disconnect', (r) => log.admin(`❌ admin disconnected from ${r.url}`))
+    this.ndk.pool.on('relay:authed', (r) => {
+      log.admin(`🔐 admin authenticated on ${r.url}, refreshing admin subscription`)
+      this.subscribeAdminCommands().catch((err) => {
+        logError('admin', 'Failed to resubscribe to admin commands after relay:authed', err)
+      })
+    })
 
     const ADMIN_CONNECT_TIMEOUT_MS = 5000
     const ADMIN_RETRY_DELAY_MS = 2000
@@ -157,12 +194,7 @@ class AdminInterface {
       }
     }
 
-    const signerUid = identityIdFromPublicKey(this.signerUser!.pubkey)
-    log.admin(`Subscribing to admin commands for ${signerUid.substring(0, 16)}...`)
-    this.adminSub = await this.rpc.subscribe({
-      kinds: [KIND_ADMIN_COMMAND as number],
-      '#p': [signerUid]
-    })
+    await this.subscribeAdminCommands()
   }
 
   private async handleRequest(req: NDKRpcRequest) {
