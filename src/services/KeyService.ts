@@ -150,7 +150,6 @@ export interface KeyFamilyMember {
 
 export interface KeyFamily {
   identity: KeyFamilyMember
-  enc?: KeyFamilyMember
   kem?: {
     active?: KeyFamilyMember
     retired: KeyFamilyMember[]
@@ -170,23 +169,6 @@ export async function resolveKeyFamily(identityKeyName: string): Promise<KeyFami
 
   const identityPrivateKeyHex = await retrieveKey(identityKeyName)
   if (!identityPrivateKeyHex) return null
-
-  const encRow = await prisma.key.findFirst({
-    where: { parentKeyName: identityKeyName, role: 'enc', status: 'ACTIVE' }
-  })
-
-  let enc: KeyFamilyMember | undefined
-  if (encRow) {
-    const encPrivateKeyHex = await retrieveKey(encRow.keyName)
-    if (encPrivateKeyHex) {
-      enc = {
-        keyName: encRow.keyName,
-        pubkey: encRow.pubkey,
-        privateKeyHex: encPrivateKeyHex,
-        algorithm: encRow.algorithm
-      }
-    }
-  }
 
   const kemRows = await prisma.key.findMany({
     where: {
@@ -238,7 +220,6 @@ export async function resolveKeyFamily(identityKeyName: string): Promise<KeyFami
       privateKeyHex: identityPrivateKeyHex,
       algorithm: identityRow.algorithm
     },
-    enc,
     kem
   }
 }

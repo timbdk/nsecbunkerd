@@ -40,7 +40,7 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
 
       // Health check endpoint
       if (url.pathname === '/health') {
-        const healthy = daemon.isReady && daemon.ndk?.pool?.relays?.size > 0
+        const healthy = daemon.isReady && (daemon.ndk?.pool?.relays?.size || 0) > 0
         return Response.json({
           status: healthy ? 'healthy' : 'unhealthy',
           ready: daemon.isReady,
@@ -50,6 +50,19 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
 
       // Testing endpoints (only available in testing/development environments)
       if (isTesting) {
+        // GET /testing/health/relay
+        if (url.pathname === '/testing/health/relay') {
+          const targetUrl = url.searchParams.get('url')
+          const poolRelays = daemon.ndk?.pool ? (Array.from(daemon.ndk.pool.relays.values()) as any[]) : []
+          const isMatch = (r: any) =>
+            !targetUrl || r.url === targetUrl || r.url.includes(targetUrl) || targetUrl.includes(r.url)
+          const matched = poolRelays.find(isMatch)
+          const isListening = matched ? matched.status >= 8 : poolRelays.some((r) => r.status >= 8)
+          return Response.json({
+            listening: isListening,
+            status: matched?.status ?? 0
+          }, { status: isListening ? 200 : 503, headers })
+        }
         // POST /testing/register
         if (url.pathname === '/testing/register' && req.method === 'POST') {
           try {
@@ -686,16 +699,6 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
           }
         }
 
-        // GET /testing/health/relay
-        if (url.pathname === '/testing/health/relay' && req.method === 'GET') {
-          const qsHost = url.searchParams.get('url')
-          if (!qsHost) return Response.json({ error: 'url parameter is required' }, { status: 400, headers })
-          const decodedUrl = decodeURIComponent(qsHost)
-          const relay = daemon.ndk.pool.relays.get(decodedUrl) || daemon.ndk.pool.relays.get(decodedUrl.endsWith('/') ? decodedUrl.slice(0, -1) : decodedUrl + '/')
-          if (!relay) return Response.json({ status: 'not-configured', requested: decodedUrl, pool: Array.from(daemon.ndk.pool.relays.keys()) }, { status: 404, headers })
-          if (relay.status >= 5) return Response.json({ status: 'listening' }, { headers })
-          return Response.json({ status: 'connecting', code: relay.status }, { status: 503, headers })
-        }
 
         // GET /testing/health/db
         if (url.pathname === '/testing/health/db' && req.method === 'GET') {
