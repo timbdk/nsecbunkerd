@@ -1,5 +1,5 @@
 import * as fs from 'fs'
-import { Daemon, isLegacyConfigFile } from '../dist/daemon/index.js'
+import { Daemon } from '../dist/daemon/index.js'
 
 // Inject serialization prefix from environment (FATAL if missing)
 if (!process.env.VERITY_SERIALIZATION_PREFIX) {
@@ -37,37 +37,28 @@ try {
   process.exit(1)
 }
 
-let configFile = '/app/config/nsecbunker.json'
-const configFlagIndex = process.argv.indexOf('--config')
-if (configFlagIndex > -1 && process.argv.length > configFlagIndex + 1) {
-    configFile = process.argv[configFlagIndex + 1]
+if (!process.env.ADMIN_UIDS) {
+  console.error('[FATAL] ADMIN_UIDS not set')
+  process.exit(1)
 }
-
-if (fs.existsSync(configFile)) {
-  try {
-    const fileConfig = JSON.parse(fs.readFileSync(configFile, 'utf8'))
-    if (isLegacyConfigFile(fileConfig)) {
-      console.error(
-        '[FATAL] nsecbunker.json contains legacy key material (admin.key / keys.admin / npubs).\n' +
-        'Remove key material from nsecbunker.json. Daemon identity is now configured via:\n' +
-        '  SIGNER_DAEMON_KEY (ML-DSA-44 hex), SIGNER_TRANSPORT_KEM_KEY (ML-KEM-768 hex),\n' +
-        '  and SIGNER_UID (identity guard). Admin allow-list uses uid-based env vars.'
-      )
-      process.exit(1)
-    }
-  } catch (err: any) {
-    console.warn(`WARNING: Failed to parse config file ${configFile}`)
-  }
-}
-
-const adminUids = (process.env.ADMIN_UIDS || '')
+const adminUids = process.env.ADMIN_UIDS
   .split(',')
   .map((r) => r.trim())
   .filter(Boolean)
 
-const relays = (process.env.RELAYS || '').split(',').map((r) => r.trim()).filter(Boolean)
+if (!process.env.RELAYS) {
+  console.error('[FATAL] RELAYS not set')
+  process.exit(1)
+}
+const relays = process.env.RELAYS.split(',').map((r) => r.trim()).filter(Boolean)
 if (relays.length === 0) {
-    console.warn("WARNING: RELAYS env var is empty or missing")
+  console.error('[FATAL] RELAYS env var is empty')
+  process.exit(1)
+}
+
+if (!process.env.DATABASE_URL) {
+  console.error('[FATAL] DATABASE_URL not set')
+  process.exit(1)
 }
 
 const config = {
@@ -78,10 +69,10 @@ const config = {
     adminRelays: relays,
     allowedUids: adminUids
   },
-  database: process.env.DATABASE_URL || `file:/app/config/nsecbunker.db`,
-  logs: process.env.AUDIT_LOG_PATH || '/app/logs/audit',
+  database: process.env.DATABASE_URL,
+  logs: '/app/logs/audit',
   verbose: true,
-  authPort: parseInt(process.env.PORT || '3000', 10),
+  authPort: 3000,
   authHost: '0.0.0.0'
 }
 

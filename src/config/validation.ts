@@ -8,23 +8,6 @@ import { publicKeyFromSecret } from 'verity-event-data-module'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
-// ── Legacy Configuration Guard ───────────────────────────────────────────────
-
-/**
- * Checks if a parsed configuration object contains legacy nsecbunker.json key material.
- * Returns true if legacy admin.key, keys.admin, or non-empty admin.npubs are present.
- */
-export function isLegacyConfigFile(raw: any): boolean {
-  if (!raw || typeof raw !== 'object') return false
-
-  const hasAdminKey = Boolean(raw.admin?.key || raw.keys?.admin)
-  const hasAdminNpubs = Array.isArray(raw.admin?.npubs)
-    ? raw.admin.npubs.length > 0
-    : Boolean(raw.admin?.npubs && typeof raw.admin.npubs === 'string' && raw.admin.npubs.trim().length > 0)
-
-  return hasAdminKey || hasAdminNpubs
-}
-
 // ── Environment Validation ───────────────────────────────────────────────────
 
 export interface DaemonEnvValidationResult {
@@ -33,17 +16,10 @@ export interface DaemonEnvValidationResult {
 }
 
 /**
- * Validates the daemon environment against Phase 05 requirements.
- * Enforces SIGNER_KEK, SIGNER_DAEMON_KEY, SIGNER_TRANSPORT_KEM_KEY, and VERITY_PLATFORM_ID.
+ * Validates the daemon environment against SSOT requirements.
+ * Enforces SIGNER_KEK, SIGNER_DAEMON_KEY, SIGNER_TRANSPORT_KEM_KEY, SIGNER_UID, and VERITY_PLATFORM_ID.
  */
 export function validateDaemonEnvironment(env: NodeJS.ProcessEnv): DaemonEnvValidationResult {
-  if (env.SIGNER_MASTER_KEY) {
-    return {
-      valid: false,
-      error: 'FATAL: SIGNER_MASTER_KEY is deprecated and must not be used. Use SIGNER_KEK, SIGNER_DAEMON_KEY, SIGNER_TRANSPORT_KEM_KEY, and SIGNER_UID.'
-    }
-  }
-
   const kek = env.SIGNER_KEK
   if (!kek) {
     return {
@@ -95,21 +71,25 @@ export function validateDaemonEnvironment(env: NodeJS.ProcessEnv): DaemonEnvVali
   }
 
   const signerUid = env.SIGNER_UID
-  if (signerUid) {
-    try {
-      const daemonPubkey = publicKeyFromSecret('ml-dsa-44', daemonKey)
-      const daemonKeyHash = bytesToHex(sha256(daemonPubkey))
-      if (signerUid !== daemonKeyHash) {
-        return {
-          valid: false,
-          error: `CRITICAL: SIGNER_UID mismatch! Expected ${signerUid}, got derived ${daemonKeyHash}`
-        }
-      }
-    } catch (e: any) {
+  if (!signerUid || signerUid.length !== 64 || !/^[0-9a-fA-F]{64}$/.test(signerUid)) {
+    return {
+      valid: false,
+      error: 'CRITICAL: SIGNER_UID environment variable not set or invalid (must be 64-character hex string)'
+    }
+  }
+  try {
+    const daemonPubkey = publicKeyFromSecret('ml-dsa-44', daemonKey)
+    const daemonKeyHash = bytesToHex(sha256(daemonPubkey))
+    if (signerUid !== daemonKeyHash) {
       return {
         valid: false,
-        error: `CRITICAL: Failed to derive public key from SIGNER_DAEMON_KEY: ${e.message}`
+        error: `CRITICAL: SIGNER_UID mismatch! Expected ${signerUid}, got derived ${daemonKeyHash}`
       }
+    }
+  } catch (e: any) {
+    return {
+      valid: false,
+      error: `CRITICAL: Failed to derive public key from SIGNER_DAEMON_KEY: ${e.message}`
     }
   }
 
