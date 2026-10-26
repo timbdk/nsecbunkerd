@@ -67,7 +67,7 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
         if (url.pathname === '/testing/register' && req.method === 'POST') {
           try {
             const body = await req.json() as any
-            const { keyName, clientPubkey, clientEncPubkey, clientKemPubkey, createdAt, identityKey, encKey, kemKey } = body
+            const { keyName, clientPubkey, clientKemPubkey, createdAt, identityKey, kemKey } = body
 
             if (!keyName || !identityKey) {
               return Response.json({ error: 'keyName and identityKey are required' }, { status: 400, headers })
@@ -137,16 +137,15 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
               checkpointService.broadcast('signer.testing.client_authorized', { keyName, clientPubkey })
 
               const clientUid = clientPubkey.length === 2624 ? identityIdFromPublicKey(clientPubkey) : clientPubkey
-              const targetKemPubkey = clientKemPubkey || (clientEncPubkey && clientEncPubkey.length === 2368 ? clientEncPubkey : undefined)
-              if (targetKemPubkey) {
+              if (clientKemPubkey) {
                 await prisma.session.updateMany({
                   where: { keyName, clientPubkey: { in: [clientPubkey, clientUid] } },
-                  data: { clientKemPubkey: targetKemPubkey }
+                  data: { clientKemPubkey }
                 })
               }
 
               const attestationPayload = JSON.stringify({ id: 'short-circuit', result: 'attestation' })
-              const encryptedAttestation = kemEncrypt(targetKemPubkey || kemPubkeyHex!, attestationPayload)
+              const encryptedAttestation = kemEncrypt(clientKemPubkey || kemPubkeyHex!, attestationPayload)
 
               const { NDKRelaySet } = await import('@nostr-dev-kit/ndk')
               const uid = identityIdFromPublicKey(identityPubkeyHex)
@@ -238,7 +237,7 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
         if (url.pathname === '/testing/authorize-client' && req.method === 'POST') {
           try {
             const body = await req.json() as any
-            const { keyName, clientPubkey, clientEncPubkey, clientKemPubkey, certify, localSigningPubkey, createdAt, parentEntryId } = body
+            const { keyName, clientPubkey, clientKemPubkey, certify, localSigningPubkey, createdAt, parentEntryId } = body
             
             if (!keyName || !clientPubkey) return Response.json({ error: 'keyName and clientPubkey are required' }, { status: 400, headers })
 
@@ -262,12 +261,11 @@ export function startHttpServer(daemon: any, port: number, host?: string): Serve
               'test-client'
             )
 
-            const targetKemPubkey = clientKemPubkey || (clientEncPubkey && clientEncPubkey.length === 2368 ? clientEncPubkey : undefined)
-            if (targetKemPubkey) {
+            if (clientKemPubkey) {
               const clientUid = clientPubkey.length === 2624 ? identityIdFromPublicKey(clientPubkey) : clientPubkey
               await prisma.session.updateMany({
                 where: { keyName, clientPubkey: { in: [clientPubkey, clientUid] } },
-                data: { clientKemPubkey: targetKemPubkey }
+                data: { clientKemPubkey }
               })
             }
 

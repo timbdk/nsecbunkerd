@@ -308,7 +308,7 @@ export class Daemon {
         const user = await this.ndk.signer?.user()
         logStartup(`nsecBunker connected and ready: ${user?.pubkey?.substring(0, 16) || 'unknown identity'} after ${attempts} attempts`)
       } catch (e: any) {
-        logError('daemon', `Initial connection failed: ${e.message}`)
+        logError('daemon', `Initial connection failed: ${e.message}`, e)
         log.daemon(`Retrying in ${RETRY_DELAY_MS}ms...`)
         await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS))
       }
@@ -316,12 +316,20 @@ export class Daemon {
 
     // Wait for relay authentication to complete before querying platform chain
     const NDK_RELAY_STATUS_AUTHENTICATED = 8
-    const relays = Array.from(this.ndk.pool.relays.values()) as any[]
-    for (const poolRelay of relays) {
-      let authAttempts = 0
-      while (poolRelay && poolRelay.status < NDK_RELAY_STATUS_AUTHENTICATED && authAttempts < 50) {
-        await new Promise((resolve) => setTimeout(resolve, 100))
-        authAttempts++
+    const waitForRelaysAuthenticated = async () => {
+      const relays = Array.from(this.ndk.pool.relays.values()) as any[]
+      if (relays.length === 0) {
+        throw new Error('No relays found in NDK pool')
+      }
+      for (const poolRelay of relays) {
+        let authAttempts = 0
+        while (poolRelay && poolRelay.status < NDK_RELAY_STATUS_AUTHENTICATED && authAttempts < 50) {
+          await new Promise((resolve) => setTimeout(resolve, 100))
+          authAttempts++
+        }
+        if (poolRelay && poolRelay.status < NDK_RELAY_STATUS_AUTHENTICATED) {
+          throw new Error(`Relay ${poolRelay.url} not authenticated (status: ${poolRelay.status})`)
+        }
       }
     }
 
@@ -333,6 +341,7 @@ export class Daemon {
       platformAttempts++
       log.daemon(`Verifying platform chain (attempt ${platformAttempts})...`)
       try {
+        await waitForRelaysAuthenticated()
         const events = await this.fetchPlatformChain(platformId)
         const verification = verifyPlatformChain(events, platformId)
         if (!verification.verified) {
@@ -353,7 +362,7 @@ export class Daemon {
           serviceEntryId: serviceEntry.id.substring(0, 16)
         })
       } catch (e: any) {
-        logError('daemon', `Platform chain verification attempt ${platformAttempts} failed: ${e.message}`)
+        logError('daemon', `Platform chain verification attempt ${platformAttempts} failed: ${e.message}`, e)
         log.daemon(`Retrying platform chain verification in ${RETRY_DELAY_MS}ms...`)
         await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS))
       }
@@ -382,7 +391,7 @@ export class Daemon {
         announcementPublished = true
         logStartup(`✅ Transport KEM announcement published (or confirmed current)`)
       } catch (e: any) {
-        logError('daemon', `Transport KEM announcement attempt ${announcementAttempts} failed: ${e.message}`)
+        logError('daemon', `Transport KEM announcement attempt ${announcementAttempts} failed: ${e.message}`, e)
         log.daemon(`Retrying announcement publication in ${RETRY_DELAY_MS}ms...`)
         await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS))
       }
