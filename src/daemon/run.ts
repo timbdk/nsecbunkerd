@@ -355,7 +355,7 @@ export class Daemon {
 
         this.platformServiceEntryId = serviceEntry.id
         platformVerified = true
-        logStartup(`✅ Platform chain verified: ${events.length} entries, daemon service entry ${serviceEntry.id.substring(0, 16)}...`)
+        logStartup(`Platform chain verified: ${events.length} entries, daemon service entry ${serviceEntry.id.substring(0, 16)}...`)
 
         checkpointService.broadcast('signer.platform_chain.verified', {
           platformId: platformId.substring(0, 16),
@@ -389,7 +389,7 @@ export class Daemon {
           this.config.nostr.relays
         )
         announcementPublished = true
-        logStartup(`✅ Transport KEM announcement published (or confirmed current)`)
+        logStartup('Transport KEM announcement published (or confirmed current)')
       } catch (e: any) {
         logError('daemon', `Transport KEM announcement attempt ${announcementAttempts} failed: ${e.message}`, e)
         log.daemon(`Retrying announcement publication in ${RETRY_DELAY_MS}ms...`)
@@ -460,7 +460,7 @@ export class Daemon {
     )
 
     await this.daemonBackend.start()
-    logStartup('✅ Consolidated daemon backend started on #p: [H(daemon key)]')
+    logStartup('Consolidated daemon backend started on #p: [H(daemon key)]')
   }
 
   /**

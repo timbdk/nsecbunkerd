@@ -105,13 +105,23 @@ export function auditSigningRequest(event: SigningAuditEvent): void {
 
 export function logStartup(message: string, data?: Record<string, any>): void {
   const emoji = message.includes('Error') || message.includes('CRITICAL') ? '❌' : '✅'
-  console.log(`${emoji} ${message}`, data ? JSON.stringify(data) : '')
-  log.daemon(message, data)
+  if (data !== undefined) {
+    console.log(`${emoji} ${message}`, JSON.stringify(data))
+    log.daemon(message, data)
+  } else {
+    console.log(`${emoji} ${message}`)
+    log.daemon(message)
+  }
 }
 
 export function logError(namespace: keyof typeof log, message: string, error?: any): void {
-  console.error(`❌ ${message}`, error?.message || error || '')
-  log[namespace](`ERROR: ${message}`, error)
+  if (error !== undefined) {
+    console.error(`❌ ${message}`, error?.message || error)
+    log[namespace](`ERROR: ${message}`, error)
+  } else {
+    console.error(`❌ ${message}`)
+    log[namespace](`ERROR: ${message}`)
+  }
 }
 
 // ============================================================================
